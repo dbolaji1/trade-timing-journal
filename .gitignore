@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Database - KEEP the file for personal use, but ignore in public GitHub push
+# If you want to backup your history privately, see scripts/backup.js
+# For GitHub, we ignore the live DB to avoid leaking personal trades:
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
+
+# Keep the folders themselves
+!data/.gitkeep
+!backups/.gitkeep
+
+# Backups (optional: uncomment to ignore backups too)
+# backups/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+npm-debug.log*
+logs/
+*.log
+
+# Env
+.env
+.env.local

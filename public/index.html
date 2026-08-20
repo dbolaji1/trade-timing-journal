@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trade Timing Journal - Session 1 Check</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#0f172a; color:#e2e8f0; line-height:1.6; padding:2rem; max-width:900px; margin:0 auto}
+  h1{color:#38bdf8; margin-bottom:.5rem}
+  .subtitle{color:#94a3b8; margin-bottom:2rem}
+  .card{background:#1e293b; border:1px solid #334155; border-radius:12px; padding:1.5rem; margin-bottom:1.5rem}
+  .card h2{color:#f8fafc; font-size:1.1rem; margin-bottom:1rem; border-bottom:1px solid #334155; padding-bottom:.5rem}
+  label{display:block; font-size:.85rem; color:#cbd5e1; margin-bottom:.25rem; margin-top:.75rem}
+  input, select, textarea{width:100%; padding:.6rem .75rem; background:#0f172a; border:1px solid #334155; border-radius:8px; color:#f1f5f9; font-size:.95rem}
+  input:focus, select:focus, textarea:focus{outline:none; border-color:#38bdf8; box-shadow:0 0 0 3px rgba(56,189,248,.15)}
+  .row{display:grid; grid-template-columns:1fr 1fr; gap:1rem}
+  @media(max-width:600px){.row{grid-template-columns:1fr}}
+  button{padding:.65rem 1.2rem; border-radius:8px; border:none; font-weight:600; cursor:pointer; font-size:.9rem; margin-top:.5rem}
+  .btn-primary{background:#38bdf8; color:#0f172a}
+  .btn-primary:hover{background:#0ea5e9}
+  .btn-secondary{background:#334155; color:#e2e8f0}
+  .btn-secondary:hover{background:#475569}
+  .btn-danger{background:#ef4444; color:white}
+  .btn-danger:hover{background:#dc2626}
+  .status{padding:.75rem 1rem; border-radius:8px; margin-top:1rem; font-size:.9rem; display:none}
+  .status.ok{display:block; background:#064e3b; border:1px solid #065f46; color:#6ee7b7}
+  .status.err{display:block; background:#7f1d1d; border:1px solid #991b1b; color:#fca5a5}
+  .status.info{display:block; background:#1e3a5f; border:1px solid #1e40af; color:#93c5fd}
+  table{width:100%; border-collapse:collapse; font-size:.85rem; margin-top:1rem}
+  th{ text-align:left; color:#94a3b8; font-weight:600; padding:.5rem; border-bottom:1px solid #334155; white-space:nowrap}
+  td{padding:.6rem .5rem; border-bottom:1px solid #1e293b; vertical-align:top}
+  tr:hover td{background:#0f172a}
+  .badge{padding:.15rem .5rem; border-radius:999px; font-size:.75rem; font-weight:700}
+  .badge-real{background:#064e3b; color:#6ee7b7}
+  .badge-demo{background:#422006; color:#fcd34d}
+  .badge-win{color:#4ade80}
+  .badge-loss{color:#f87171}
+  .badge-breakeven{color:#94a3b8}
+  .muted{color:#64748b; font-size:.8rem}
+  .flex{display:flex; gap:.5rem; flex-wrap:wrap; align-items:center}
+  .pill{padding:.35rem .75rem; border-radius:999px; font-size:.8rem; font-weight:600; border:1px solid #334155; cursor:pointer; background:#0f172a; color:#94a3b8}
+  .pill.active{background:#38bdf8; color:#0f172a; border-color:#38bdf8}
+  code{background:#0f172a; padding:.15rem .4rem; border-radius:4px; font-size:.85em; border:1px solid #334155}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-top:1rem}
+  @media(max-width:700px){.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<h1>Trade Timing Journal</h1>
+<p class="subtitle">Session 1 — Persistent Backend Verification · Timezone: <code id="tz">loading...</code> · <span id="health">checking...</span></p>
+
+<div class="card">
+  <h2>1 &nbsp; Add a Trade (writes to SQLite)</h2>
+  <p class="muted">All money is stored as integer cents. Timestamp is auto-filled in your local time and sent as UTC.</p>
+
+  <div class="row">
+    <div>
+      <label>Asset * (normalized to uppercase, separators stripped)</label>
+      <input id="asset" placeholder="e.g. btc/usdt → BTCUSDT">
+    </div>
+    <div>
+      <label>Mode *</label>
+      <select id="mode">
+        <option value="real">real</option>
+        <option value="demo">demo</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="row">
+    <div>
+      <label>Direction *</label>
+      <select id="direction">
+        <option value="long">long</option>
+        <option value="short">short</option>
+      </select>
+    </div>
+    <div>
+      <label>Outcome *</label>
+      <select id="outcome">
+        <option value="win">win</option>
+        <option value="loss">loss</option>
+        <option value="breakeven">breakeven</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="row">
+    <div>
+      <label>Amount (P&L) * — e.g. 123.45 or -50.25</label>
+      <input id="amount" type="number" step="0.01" placeholder="25.50">
+    </div>
+    <div>
+      <label>Timestamp * (auto-filled, editable)</label>
+      <input id="timestamp" type="datetime-local">
+    </div>
+  </div>
+
+  <label>Notes (optional)</label>
+  <textarea id="notes" rows="2" placeholder="Optional free-text notes..."></textarea>
+
+  <div class="flex" style="margin-top:1rem">
+    <button class="btn-primary" onclick="createTrade()">Save Trade → SQLite</button>
+    <button class="btn-secondary" onclick="fillExample()">Fill Example</button>
+    <button class="btn-secondary" onclick="resetForm()">Reset</button>
+  </div>
+  <div id="formStatus" class="status"></div>
+</div>
+
+<div class="card">
+  <h2>2 &nbsp; Trade Log (reads from SQLite)</h2>
+  <div class="flex">
+    <span class="muted">Filter:</span>
+    <button class="pill active" id="filter-all" onclick="setFilter('all')">Both</button>
+    <button class="pill" id="filter-real" onclick="setFilter('real')">Real only</button>
+    <button class="pill" id="filter-demo" onclick="setFilter('demo')">Demo only</button>
+    <button class="btn-secondary" style="margin-left:auto" onclick="loadTrades()">↻ Reload from DB</button>
+  </div>
+  <div id="logStatus" class="status"></div>
+  <div style="overflow-x:auto">
+    <table id="tradesTable">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Time (UTC → <span class="tz-label">Africa/Lagos</span>)</th>
+          <th>Asset</th>
+          <th>Dir</th>
+          <th>Outcome</th>
+          <th>P&L</th>
+          <th>Mode</th>
+          <th>Notes</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="tradesBody">
+        <tr><td colspan="9" class="muted" style="text-align:center; padding:2rem">No trades yet. Create one above.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="muted" style="margin-top:.75rem">Persistence test: add a trade → stop the server (Ctrl+C) → <code>npm start</code> → reload this page → trade should still be here.</p>
+</div>
+
+<div class="card">
+  <h2>3 &nbsp; Persistence &amp; Backup</h2>
+  <div class="grid2">
+    <div>
+      <p class="muted">Database file</p>
+      <code id="dbPath" style="display:block; margin-top:.25rem; word-break:break-all">loading...</code>
+      <p class="muted" style="margin-top:.75rem">WAL mode is enabled. The DB is created only if it doesn't exist. Restarting the server never deletes data.</p>
+    </div>
+    <div>
+      <p class="muted">Backup</p>
+      <p style="font-size:.9rem; margin-top:.25rem">Run in VS Code Terminal:</p>
+      <code style="display:block; margin-top:.25rem">npm run backup</code>
+      <p class="muted" style="margin-top:.5rem">Creates <code>backups/trades-backup-&lt;timestamp&gt;.db</code></p>
+      <button class="btn-secondary" onclick="checkHealth()">Check Health / Count</button>
+    </div>
+  </div>
+  <div id="backupStatus" class="status"></div>
+</div>
+
+<!-- Edit Modal (simple inline) -->
+<div id="editCard" class="card" style="display:none; border-color:#38bdf8">
+  <h2>Edit Trade #<span id="editId"></span></h2>
+  <div class="row">
+    <div><label>Asset</label><input id="edit_asset"></div>
+    <div><label>Mode</label><select id="edit_mode"><option value="real">real</option><option value="demo">demo</option></select></div>
+  </div>
+  <div class="row">
+    <div><label>Direction</label><select id="edit_direction"><option value="long">long</option><option value="short">short</option></select></div>
+    <div><label>Outcome</label><select id="edit_outcome"><option value="win">win</option><option value="loss">loss</option><option value="breakeven">breakeven</option></select></div>
+  </div>
+  <div class="row">
+    <div><label>Amount</label><input id="edit_amount" type="number" step="0.01"></div>
+    <div><label>Timestamp</label><input id="edit_timestamp" type="datetime-local"></div>
+  </div>
+  <label>Notes</label><textarea id="edit_notes" rows="2"></textarea>
+  <div class="flex" style="margin-top:1rem">
+    <button class="btn-primary" onclick="saveEdit()">Save Changes</button>
+    <button class="btn-secondary" onclick="cancelEdit()">Cancel</button>
+    <button class="btn-danger" style="margin-left:auto" onclick="deleteTrade(currentEditId)">Delete Trade</button>
+  </div>
+  <div id="editStatus" class="status"></div>
+</div>
+
+<script>
+let allTrades = [];
+let currentFilter = 'all';
+let currentEditId = null;
+let CONFIG_TZ = 'Africa/Lagos';
+
+// Init
+(async function init(){
+  // Set timestamp default to now (local datetime-local)
+  const now = new Date();
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  document.getElementById('timestamp').value = now.toISOString().slice(0,16);
+
+  await loadConfig();
+  await checkHealth();
+  await loadTrades();
+})();
+
+async function loadConfig(){
+  try{
+    const r = await fetch('/api/config');
+    const j = await r.json();
+    CONFIG_TZ = j.timezone || 'Africa/Lagos';
+    document.getElementById('tz').textContent = CONFIG_TZ;
+    document.querySelectorAll('.tz-label').forEach(el=>el.textContent=CONFIG_TZ);
+  }catch(e){
+    document.getElementById('tz').textContent = 'Africa/Lagos (fallback)';
+  }
+}
+
+async function checkHealth(){
+  try{
+    const r = await fetch('/api/health');
+    const j = await r.json();
+    document.getElementById('health').innerHTML = `<span style="color:#4ade80">● online</span> · ${j.trade_count} trades · schema v${j.schema_version}`;
+    document.getElementById('dbPath').textContent = j.db_path;
+    document.getElementById('backupStatus').className='status ok';
+    document.getElementById('backupStatus').textContent = `DB healthy — ${j.trade_count} trades stored at ${j.db_path}`;
+  }catch(e){
+    document.getElementById('health').textContent = 'offline';
+    showStatus('backupStatus', 'Could not reach /api/health. Is the server running?', 'err');
+  }
+}
+
+function showStatus(id, msg, type){
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.className = 'status ' + type;
+  if(type==='ok') setTimeout(()=> el.className='status', 5000);
+}
+
+function fillExample(){
+  document.getElementById('asset').value = 'btc/usdt';
+  document.getElementById('direction').value = 'long';
+  document.getElementById('outcome').value = 'win';
+  document.getElementById('amount').value = '42.50';
+  document.getElementById('mode').value = 'real';
+  document.getElementById('notes').value = 'Breakout entry, good volume';
+}
+function resetForm(){
+  document.getElementById('asset').value='';
+  document.getElementById('amount').value='';
+  document.getElementById('notes').value='';
+  const now = new Date(); now.setMinutes(now.getMinutes()-now.getTimezoneOffset());
+  document.getElementById('timestamp').value = now.toISOString().slice(0,16);
+}
+
+async function createTrade(){
+  const payload = {
+    asset: document.getElementById('asset').value,
+    direction: document.getElementById('direction').value,
+    outcome: document.getElementById('outcome').value,
+    amount: document.getElementById('amount').value,
+    mode: document.getElementById('mode').value,
+    notes: document.getElementById('notes').value,
+    timestamp: document.getElementById('timestamp').value
+  };
+  if(!payload.asset || payload.amount==='' || !payload.timestamp){
+    showStatus('formStatus','Please fill Asset, Amount, and Timestamp.','err'); return;
+  }
+  showStatus('formStatus','Saving to SQLite...','info');
+  try{
+    const r = await fetch('/api/trades', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const j = await r.json();
+    if(!r.ok){
+      const detail = j.details ? j.details.join(' ') : j.error;
+      showStatus('formStatus','Validation / Server error: ' + detail,'err'); return;
+    }
+    showStatus('formStatus',`✓ Saved trade #${j.id} — ${j.asset} ${j.direction} ${j.outcome} ${j.pnl_formatted} (${j.mode}) at ${j.timestamp_utc} (UTC, stored)`,'ok');
+    await loadTrades();
+    await checkHealth();
+  }catch(e){
+    showStatus('formStatus','Network error: '+e.message,'err');
+  }
+}
+
+async function loadTrades(){
+  showStatus('logStatus','Loading from SQLite...','info');
+  try{
+    const r = await fetch('/api/trades?mode='+currentFilter);
+    const data = await r.json();
+    if(!r.ok){ showStatus('logStatus','Error: '+(data.error||r.statusText),'err'); return; }
+    allTrades = data;
+    renderTrades();
+    showStatus('logStatus',`Loaded ${data.length} trade(s) from SQLite (filter: ${currentFilter})`,'ok');
+  }catch(e){
+    showStatus('logStatus','Network error: '+e.message,'err');
+  }
+}
+
+function setFilter(mode){
+  currentFilter = mode;
+  document.querySelectorAll('.pill').forEach(p=>p.classList.remove('active'));
+  document.getElementById('filter-'+mode).classList.add('active');
+  if(allTrades.length){
+    // re-fetch to ensure server filter is used (critical test)
+    loadTrades();
+  } else {
+    loadTrades();
+  }
+}
+
+function formatInTZ(utcIso){
+  try{
+    const d = new Date(utcIso);
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: CONFIG_TZ,
+      year:'numeric', month:'short', day:'2-digit',
+      hour:'2-digit', minute:'2-digit', hour12:false
+    }).format(d) + ` (${CONFIG_TZ})`;
+  }catch(e){
+    return utcIso;
+  }
+}
+
+function renderTrades(){
+  const tbody = document.getElementById('tradesBody');
+  if(allTrades.length===0){
+    tbody.innerHTML = `<tr><td colspan="9" class="muted" style="text-align:center; padding:2rem">No trades for this filter. Try "Both".</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = allTrades.map(t=>`
+    <tr>
+      <td>#${t.id}</td>
+      <td><div style="white-space:nowrap">${formatInTZ(t.timestamp_utc)}</div><div class="muted" style="font-size:.75rem">${t.timestamp_utc} UTC</div></td>
+      <td><strong>${t.asset}</strong></td>
+      <td>${t.direction}</td>
+      <td><span class="badge-${t.outcome}">${t.outcome}</span></td>
+      <td style="font-weight:700; color:${t.pnl_cents>=0?'#4ade80':'#f87171'}">${t.pnl_cents>=0?'+':''}${t.pnl_formatted}</td>
+      <td><span class="badge badge-${t.mode}">${t.mode}</span></td>
+      <td style="max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="${(t.notes||'').replace(/"/g,'&quot;')}">${t.notes||'<span class="muted">—</span>'}</td>
+      <td><button class="btn-secondary" style="padding:.3rem .6rem; font-size:.8rem; margin:0" onclick="startEdit(${t.id})">Edit</button></td>
+    </tr>
+  `).join('');
+}
+
+function startEdit(id){
+  const t = allTrades.find(x=>x.id===id);
+  if(!t) return;
+  currentEditId = id;
+  document.getElementById('editId').textContent = id;
+  document.getElementById('edit_asset').value = t.asset;
+  document.getElementById('edit_mode').value = t.mode;
+  document.getElementById('edit_direction').value = t.direction;
+  document.getElementById('edit_outcome').value = t.outcome;
+  document.getElementById('edit_amount').value = t.amount;
+  document.getElementById('edit_notes').value = t.notes||'';
+  // convert UTC to local datetime-local for editing
+  const d = new Date(t.timestamp_utc);
+  const local = new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,16);
+  // Actually better: show local wall time; but we send it back as local and server converts to UTC
+  // Use the Date's local representation
+  const pad = n=>String(n).padStart(2,'0');
+  const localDt = new Date(t.timestamp_utc);
+  // Create datetime-local value in user's local time that corresponds to same instant
+  // So we can just use the ISO trick above but with correct offset handling
+  document.getElementById('edit_timestamp').value = new Date(new Date(t.timestamp_utc).getTime() - new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);
+  document.getElementById('editCard').style.display='block';
+  document.getElementById('editCard').scrollIntoView({behavior:'smooth'});
+  showStatus('editStatus','Editing trade #'+id+' — changes write to SQLite on Save.','info');
+}
+
+function cancelEdit(){
+  currentEditId=null;
+  document.getElementById('editCard').style.display='none';
+}
+
+async function saveEdit(){
+  if(!currentEditId) return;
+  const payload = {
+    asset: document.getElementById('edit_asset').value,
+    direction: document.getElementById('edit_direction').value,
+    outcome: document.getElementById('edit_outcome').value,
+    amount: document.getElementById('edit_amount').value,
+    mode: document.getElementById('edit_mode').value,
+    notes: document.getElementById('edit_notes').value,
+    timestamp: document.getElementById('edit_timestamp').value
+  };
+  showStatus('editStatus','Saving changes to SQLite...','info');
+  try{
+    const r = await fetch('/api/trades/'+currentEditId, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const j = await r.json();
+    if(!r.ok){
+      const detail = j.details ? j.details.join(' ') : j.error;
+      showStatus('editStatus','Validation / Server error: '+detail,'err'); return;
+    }
+    showStatus('editStatus',`✓ Updated trade #${j.id}`,'ok');
+    await loadTrades();
+    await checkHealth();
+    setTimeout(cancelEdit, 800);
+  }catch(e){
+    showStatus('editStatus','Network error: '+e.message,'err');
+  }
+}
+
+async function deleteTrade(id){
+  const delId = id || currentEditId;
+  if(!confirm('Delete trade #'+delId+'? This permanently removes it from SQLite.')) return;
+  try{
+    const r = await fetch('/api/trades/'+delId, {method:'DELETE'});
+    const j = await r.json();
+    if(!r.ok){ showStatus('editStatus','Delete failed: '+(j.error||r.statusText),'err'); return; }
+    showStatus('editStatus','✓ Deleted trade #'+delId,'ok');
+    await loadTrades();
+    await checkHealth();
+    cancelEdit();
+  }catch(e){
+    showStatus('editStatus','Network error: '+e.message,'err');
+  }
+}
+</script>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2d8beff6cb7be9d',t:'MTc4NzEzODE4Ng=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
