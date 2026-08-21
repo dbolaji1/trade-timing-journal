@@ -1,67 +1,103 @@
 # Trade Timing Journal
 
-A personal trading journal designed to determine — from **your actual historical trade data** — which **hours of the day** and **days of the week** produce the best results, without being misled by small samples, demo trades, or raw win rates.
+A personal trading journal designed to determine — from **your actual historical trade data** — which **hours of the day** and **days of the week** produce the best results, without being misled by small samples, demo trades, raw win rates, or statistical uncertainty.
 
-> **Core principle:** Every trade you save is written to a local **SQLite** file (`data/trades.db`) and **persists across restarts, weeks, and months**. Analytics are calculated from the accumulated history, with statistical honesty built in.
+> **Core principle:** Every trade you save is written to a local **SQLite** file (`data/trades.db`) and **persists across restarts, weeks, and months**. Analytics are calculated from that accumulated history, with statistical honesty built in.
 
 ---
 
-## Tech Stack (as required)
+## What the application does
+
+1. **Journal** — enter trades (asset, direction, outcome, signed P&L, real/demo, notes, timestamp), edit them, delete them, and filter the log by Real / Demo / Both. Everything reads from and writes to SQLite.
+2. **Analytics Dashboard** — hourly and weekday statistics per mode:
+   - trade count, win rate, **expectancy (average P&L)**, and a **95% Wilson confidence interval** for every bucket with enough data,
+   - "Not enough data yet" for buckets with fewer than 3 trades — never a misleading blank,
+   - **best-window callouts for BOTH real and demo trades** (demo is analysed against its own baseline and is never mixed into real statistics).
+3. **Honest best-window selection** — a window qualifies only with **≥5 trades of that mode** and a win rate **more than 5 percentage points above that mode's baseline**, and the winner is ranked by the **lower bound of its Wilson interval**, never by raw win rate. Small samples are always flagged.
+
+## Tech stack (as required)
 
 - **Node.js + Express** — server & API
-- **better-sqlite3 + SQLite** — persistent database (local file, WAL mode)
+- **better-sqlite3 + SQLite** — persistent database (local file, WAL mode, migrations)
 - **Plain HTML / Plain CSS / Vanilla JavaScript** — frontend (no frameworks)
-- **Chart.js** — charts only where they genuinely help (Sessions 2–3)
+- **Chart.js** — vendored locally (`public/vendor/chart.umd.js`), used only for the dashboard charts
 
-No React, TypeScript, MongoDB, PostgreSQL, Tailwind, auth, or cloud services.
+No React, TypeScript, MongoDB, PostgreSQL, Tailwind, auth, or cloud services. No external statistics library — the Wilson intervals are implemented directly in `analytics.js`.
 
 ---
 
-## Current Status — Session 1 Complete ✅
+## How to install and run
 
-**Session 1 — Foundation + Persistent Backend** is finished.
+### Prerequisites
 
-What works right now:
+- **Node.js 18 or newer** ([nodejs.org](https://nodejs.org))
+- **VS Code** (or any editor with a terminal)
 
-- ✅ Node.js project + `package.json`
-- ✅ SQLite file at `data/trades.db` (created only if it doesn't exist)
-- ✅ WAL mode (`journal_mode=WAL`) for durability
-- ✅ `schema_version` table + simple migrations (safe to re-run on every start)
-- ✅ `trades` table with proper constraints
-- ✅ Express server on `http://localhost:3000`
-- ✅ Full CRUD API (`GET / POST / PUT / PATCH / DELETE /api/trades`)
-- ✅ Server-side validation (finite numbers, allowed enums, timestamps, plausible dates)
-- ✅ Money stored as **integer cents** (`pnl_cents`) — never floating point in DB
-- ✅ Asset normalization (`btc/usdt` → `BTCUSDT`)
-- ✅ Timestamps stored as **UTC** (`timestamp_utc` ISO string), bucketed later in **fixed timezone `Africa/Lagos`** (from `config.js`)
-- ✅ Backup script (`npm run backup`)
-- ✅ Minimal frontend at `public/index.html` to verify persistence
+### 1. Open the project
 
-### Project Structure
+1. Open VS Code → `File → Open Folder…` → select the `trade-timing-journal` folder.
+2. Open the terminal: `View → Terminal` (or `` Ctrl+` ``).
 
-```
-trade-timing-journal/
-├── config.js           # Fixed timezone (Africa/Lagos) + DB_PATH + port
-├── db.js               # SQLite init, WAL, migrations, schema_version
-├── validation.js       # Pure validation + normalizeAsset + toCents/formatCents
-├── server.js           # Express server + CRUD API + static serving
-├── scripts/
-│   └── backup.js       # Tiny backup script (WAL checkpoint + copy)
-├── data/
-│   ├── trades.db       # ← YOUR persistent database (never deleted on restart)
-│   ├── trades.db-wal   # WAL file (SQLite internal)
-│   ├── trades.db-shm   # shared memory file
-│   └── .gitkeep        # keeps folder in git when DB is ignored
-├── backups/
-│   └── .gitkeep
-├── public/
-│   └── index.html      # Session 1 verification UI (form + log + filters)
-├── package.json
-├── .gitignore
-└── README.md
+### 2. Install dependencies
+
+```bash
+npm install
 ```
 
-### Database Schema (v1)
+You should see `added … packages` and `found 0 vulnerabilities`.
+`better-sqlite3` v12 ships prebuilt binaries for Node 18/20/22/24, so no C++ build tools are needed.
+
+### 3. Start the server
+
+```bash
+npm start
+```
+
+Expected output the first time:
+
+```
+[DB] Created new database file at .../data/trades.db
+[DB] Applying migration v1: Create trades table
+[DB] Migrations complete. New version: 1
+
+✓ Trade Timing Journal running at http://localhost:3000
+  Timezone (fixed): Africa/Lagos
+  Database: .../data/trades.db (WAL mode, persistent)
+```
+
+On every later run you must see:
+
+```
+[DB] Opened existing database at .../data/trades.db
+[DB] Current schema version: 1
+[DB] No pending migrations. Database is up to date.
+```
+
+That proves the database was **not recreated or wiped**. Leave the terminal running.
+
+### 4. Open the app
+
+Go to `http://localhost:3000`. Two tabs:
+
+- **Journal** — the trade form and trade log.
+- **Analytics Dashboard** — KPIs, best-window callouts, hourly/weekday charts and tables.
+
+---
+
+## Database setup and persistence behavior
+
+- The database is a single file: **`data/trades.db`**, created **only if it does not exist**.
+- `db.js` opens it with **WAL mode** (`journal_mode=WAL`) and applies migrations recorded in a `schema_version` table. Running the server again is always safe — existing data is never touched.
+- Trades are stored as:
+  - `asset` — normalized uppercase with separators stripped (`btc/usdt` → `BTCUSDT`),
+  - `pnl_cents` — **integer cents** (no floating-point money in the database),
+  - `timestamp_utc` — ISO string in UTC,
+  - `mode` — `real` or `demo` (always separate).
+- Restarting the server, closing the browser, rebooting the machine — none of it deletes data.
+- To **explicitly reset** (destroys your history!): stop the server, delete `data/trades.db`, `data/trades.db-wal`, `data/trades.db-shm`, then `npm start`.
+- `data/trades.db` and `backups/*.db` are **ignored by Git** — your private trading history is never pushed to GitHub.
+
+### Schema (v1)
 
 ```sql
 CREATE TABLE trades (
@@ -76,196 +112,55 @@ CREATE TABLE trades (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-CREATE TABLE schema_version (
-  version INTEGER PRIMARY KEY,
-  applied_at TEXT NOT NULL
-);
+CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
 ```
 
 ---
 
-## How to Run — Session 1
+## API reference
 
-### Prerequisites
+| Method & path | Purpose |
+|---|---|
+| `GET /api/health` | Status: online, trade count, schema version, DB path, timezone |
+| `GET /api/trades?mode=real\|demo\|all` | Trade log from SQLite, newest first |
+| `POST /api/trades` | Create (validated server-side) |
+| `GET /api/trades/:id` | One trade |
+| `PUT /api/trades/:id` | Full update |
+| `PATCH /api/trades/:id` | Partial update |
+| `DELETE /api/trades/:id` | Delete |
+| `GET /api/analytics` | Full dashboard analytics (see below) |
 
-- **Node.js** 18+ installed ([nodejs.org](https://nodejs.org))
-- **VS Code** (with integrated Terminal)
+Validation rules (server-side, returns `400` with a `details` array):
 
-### 1. Open the project in VS Code
+- asset required → normalized, ≤20 chars
+- direction ∈ {long, short}; outcome ∈ {win, loss, breakeven}; mode ∈ {real, demo}
+- amount must be a **finite number**, stored as integer cents
+- timestamp must parse and be plausible (≥2000, ≤24h in the future)
+- notes ≤2000 chars
 
-1. Open VS Code
-2. `File → Open Folder…` → select the `trade-timing-journal` folder
-3. Open the Terminal: `View → Terminal` (or `` Ctrl+` ``)
+### `GET /api/analytics`
 
-### 2. Install dependencies
+Computed from SQLite on every request. Returns `{ timezone, generated_at, thresholds, real, demo }`.
+The `real` and `demo` blocks each contain:
 
-In the VS Code Terminal (ensure you're in the project root where `package.json` lives):
-
-```bash
-npm install
-```
-
-You should see `added 106 packages` and `found 0 vulnerabilities`.
-
-### 3. Start the server
-
-```bash
-npm start
-```
-
-Expected output:
-
-```
-[DB] Created new database file at /home/user/data/trades.db   # first run only
-[DB] Current schema version: 0
-[DB] Applying migration v1: Create trades table
-[DB] Migrations complete. New version: 1
-
-✓ Trade Timing Journal running at http://localhost:3000
-  Timezone (fixed): Africa/Lagos
-  Database: /home/user/data/trades.db (WAL mode, persistent)
-  Health: http://localhost:3000/api/health
-```
-
-On later runs you’ll see:
-
-```
-[DB] Opened existing database at /home/user/data/trades.db
-[DB] Current schema version: 1
-[DB] No pending migrations. Database is up to date.
-```
-
-That proves the DB **was not recreated or wiped**.
-
-### 4. Open the app
-
-Open your browser to:
-
-```
-http://localhost:3000
-```
-
-You’ll see the Session 1 verification UI with:
-- Trade entry form
-- Trade log
-- Real/Demo/Both filter
-- Edit/Delete
-- Health check
-
-### 5. Verify Persistence (the critical test)
-
-1. In the browser, fill the form: `Asset: BTC/USDT`, `Direction: long`, `Outcome: win`, `Amount: 42.50`, `Mode: real`, leave timestamp auto-filled, click **Save Trade → SQLite**
-2. See “✓ Saved trade #X” and the new row in the log below
-3. **Stop the server** in VS Code Terminal: press `Ctrl+C`
-4. **Restart**: `npm start`
-5. **Reload** `http://localhost:3000` in the browser
-6. ✅ The trade you just created is **still there**. Check via API too:
-
-```bash
-curl http://localhost:3000/api/trades | head
-# or
-curl http://localhost:3000/api/health
-```
-
-If you see `trade_count: 1` (or more) after restart, persistence works.
+- `summary` — n, wins, win rate, Wilson 95% CI, total P&L, expectancy (cents), small-sample flag
+- `hourly` — 24 buckets; `weekday` — 7 buckets. Each bucket: `n`, `wins`, `winRate`, `ciLower`, `ciUpper`, `expectancyCents`, `eligible` (n ≥ 3)
+- `bestHour` / `bestWeekday` — `{ found, window | baselineWinRate, marginPct }`
 
 ---
 
-## API Reference (Session 1)
+## Analytics at a high level
 
-All trades are JSON. Money is stored as `pnl_cents` (integer) and returned as both `pnl_cents` and formatted `pnl_formatted`/`amount`.
+All statistics live in `analytics.js` as pure, tested functions:
 
-### `GET /api/health`
+1. **Bucketing** — `bucketTimestamp(utcIso, timezone)`: UTC timestamp + the configured fixed timezone → `{ hour, weekday }`. The timezone comes from `config.js` (default `Africa/Lagos`), never from the server or browser clock.
+2. **Wilson 95% confidence interval** — implemented directly (no statistics library). Every win rate is reported with its interval.
+3. **Expectancy** — average P&L in integer cents, rounded only for display. Always shown next to win rate.
+4. **Minimum sample size** — a bucket needs ≥3 trades to show statistics; below that the UI says **"Not enough data yet"**.
+5. **Best window** — for **each mode separately** (real and demo), a bucket qualifies only if it has **≥5 trades of that mode** and its win rate **exceeds that mode's baseline by more than 5 percentage points**. The winner is the qualifying bucket with the **highest Wilson lower bound** (tie-break: more trades, then higher win rate). If nothing qualifies, the dashboard says so explicitly instead of pretending.
+6. **Small samples** — anything under 30 trades is labelled as provisional.
 
-```json
-{
-  "status": "ok",
-  "timezone": "Africa/Lagos",
-  "db_path": "/home/user/data/trades.db",
-  "trade_count": 3,
-  "schema_version": 1
-}
-```
-
-### `GET /api/config`
-
-```json
-{ "timezone": "Africa/Lagos" }
-```
-
-### `GET /api/trades?mode=real|demo|all`
-
-Returns array of trades, newest first. Example:
-
-```json
-{
-  "id": 1,
-  "asset": "BTCUSDT",
-  "direction": "long",
-  "outcome": "win",
-  "pnl_cents": 9999,
-  "pnl_formatted": "99.99",
-  "amount": 99.99,
-  "mode": "real",
-  "notes": "patched note",
-  "timestamp_utc": "2024-03-15T10:30:00.000Z",
-  "created_at": "2026-08-19T11:14:14.647Z",
-  "updated_at": "2026-08-19T11:14:43.425Z"
-}
-```
-
-### `POST /api/trades`
-
-Required fields: `asset`, `direction` (`long`|`short`), `outcome` (`win`|`loss`|`breakeven`), `amount` (finite number), `mode` (`real`|`demo`), `timestamp` (parseable date).
-
-Optional: `notes` (≤2000 chars), `timestamp_utc` alternative to `timestamp`.
-
-Normalization & conversion happens server-side:
-- `asset`: `"btc/usdt"` → `"BTCUSDT"`
-- `amount`: `123.45` → `pnl_cents: 12345`
-- `timestamp`: any parseable date → `timestamp_utc` ISO in UTC
-
-Validation errors return `400` with `details`:
-
-```json
-{ "error": "Validation failed.", "details": ["Direction must be one of: long, short."] }
-```
-
-### `GET /api/trades/:id` · `PUT /api/trades/:id` · `PATCH /api/trades/:id` · `DELETE /api/trades/:id`
-
-Full update (`PUT`) requires all fields; partial (`PATCH`) allows subset.
-
----
-
-## Backup
-
-The DB file **is your history**. It survives restarts unless you delete it.
-
-To back up (while server is running is okay, but stopping first is perfect):
-
-```bash
-npm run backup
-# or
-node scripts/backup.js
-# custom path:
-node scripts/backup.js --path ./my-backup.db
-```
-
-Output:
-
-```
-[Backup] WAL checkpoint completed.
-✓ Backup complete!
-  Source: /home/user/data/trades.db (28.0 KB)
-  Backup: /home/user/backups/trades-backup-2026-08-19T11-14-43-382Z.db (28.0 KB)
-```
-
-To restore (stop the server first!):
-
-```bash
-cp backups/trades-backup-2026-08-19T11-14-43-382Z.db data/trades.db
-npm start
-```
+Thresholds are configurable in `config.js` (`ANALYTICS` block).
 
 ---
 
@@ -275,67 +170,135 @@ Edit `config.js`:
 
 ```js
 const CONFIG = {
-  TIMEZONE: "Africa/Lagos",   // ← change to your IANA timezone if needed
-  DB_PATH: "./data/trades.db",// ← local persistent file
+  TIMEZONE: "Africa/Lagos",   // ← fixed IANA timezone used for all bucketing
+  DB_PATH: process.env.TT_DB_PATH || "./data/trades.db", // ← persistent local file
   PORT: process.env.PORT || 3000,
+  ANALYTICS: {
+    MIN_N: 3,                  // min trades before a bucket shows statistics
+    BEST_MIN_N: 5,             // min trades for best-window eligibility
+    BEST_MARGIN: 0.05,         // must exceed mode baseline by 5 percentage points
+    BEST_SMALL_SAMPLE_N: 30,   // below this N -> small-sample caveat
+    WILSON_Z: 1.96,            // 95% confidence
+  },
 };
 ```
 
-- **Timezone** is explicit and fixed. Every future analytics bucket (Session 3) will use `UTC timestamp + TIMEZONE → bucket` as a pure, testable function. It is **not** inferred from the browser or server.
-- **Timestamps** are stored as UTC (`toISOString()`), displayed/bucketed in `TIMEZONE`.
+`TT_DB_PATH` is only used by the automated tests (to point at a temporary file). In normal use leave it unset.
 
 ---
 
-## Data Persistence Guarantee
+## How to back up the database
 
-- `data/trades.db` is created **only if it doesn't exist**.
-- `db.js` checks `fs.existsSync` before opening, then runs migrations incrementally via `schema_version`.
-- WAL mode is set via `db.pragma("journal_mode = WAL")` and persisted in the file.
-- Restarting `node server.js` **never** deletes or clears the DB.
-- To explicitly reset (dangerous - deletes history): `rm data/trades.db data/trades.db-wal data/trades.db-shm` then `npm start`.
+Your history lives in `data/trades.db`. Back it up regularly:
 
-This satisfies: *"Create trade → save → close browser/server → reopen days later → trade still exists."*
+```bash
+npm run backup
+```
+
+This checkpoints the WAL and copies the database to `backups/trades-backup-<timestamp>.db`.
+(You can also run it with a custom path: `node scripts/backup.js --path ./my-backup.db`.)
+
+To restore (stop the server first):
+
+```bash
+cp backups/trades-backup-<timestamp>.db data/trades.db
+npm start
+```
+
+Keep copies of your backups somewhere else too (USB stick, cloud drive) — they are your insurance.
 
 ---
 
-## How to Commit to GitHub (via VS Code)
+## Running the tests
 
-1. In VS Code, open **Source Control** (left sidebar icon or `Ctrl+Shift+G`)
-2. If not yet initialized: `Initialize Repository` → then add remote:
-   - Open Terminal: `git remote add origin https://github.com/YOUR_USERNAME/trade-timing-journal.git`
-   - (Create empty repo on github.com first, no README)
-3. Stage: click `+` next to files, or `… → Commit`
-4. Message: `Session 1 – persistent backend with SQLite`
-5. `Commit` → `Push` (or `Publish Branch`)
-6. **Note:** `.gitignore` ignores `data/*.db` so your personal trades won't be pushed publicly. The folder structure (`data/.gitkeep`) is pushed. For private backups, keep your `backups/` folder local or in a private repo.
+```bash
+npm test
+```
+
+38 tests, no extra dependencies (Node's built-in test runner):
+
+- **validation** — asset normalization, integer-cent conversion, formatting, all validation rules
+- **analytics** — fixed-timestamp fixtures for bucketing (incl. a DST transition), Wilson reference values, minimum sample size, best-window logic (min-N, margin, Wilson-lower-bound ranking), real/demo separation, demo best-window
+- **integration** — boots the real Express app on a temporary SQLite file: CRUD, filters, validation errors, the `/api/analytics` endpoint, and the **close-and-reopen persistence guarantee**
+
+---
+
+## Project structure
+
+```
+trade-timing-journal/
+├── config.js            # Fixed timezone + DB path + validation/analytics thresholds
+├── db.js                # SQLite init, WAL mode, schema_version migrations
+├── validation.js        # Server-side validation + cents/asset/timestamp handling
+├── analytics.js         # Bucketing, Wilson intervals, expectancy, best-window logic
+├── server.js            # Express server + CRUD + /api/analytics + static files
+├── scripts/
+│   └── backup.js        # Backup script (WAL checkpoint + file copy)
+├── tests/
+│   ├── validation.test.js
+│   ├── analytics.test.js
+│   └── api.integration.test.js
+├── data/
+│   ├── trades.db        # ← YOUR persistent database (ignored by Git, never auto-deleted)
+│   └── .gitkeep
+├── backups/             # npm run backup writes timestamped copies here (ignored by Git)
+├── public/
+│   ├── index.html       # Page structure (tabs, journal, dashboard)
+│   ├── styles.css       # All styling — plain CSS, responsive, no framework
+│   ├── app.js           # Journal logic (form, log, filters, edit/delete)
+│   ├── dashboard.js     # Dashboard logic (KPIs, best windows, Chart.js)
+│   └── vendor/chart.umd.js  # Chart.js vendored for offline use
+├── package.json
+├── .gitignore
+└── README.md
+```
+
+---
+
+## Statistical honesty checklist
+
+- Real and demo data are **never silently combined** — separate series, separate baselines, separate best windows.
+- Win rates are always shown with **95% Wilson confidence intervals**.
+- **Expectancy stays visible** — a high win rate does not mean profitable.
+- Buckets below 3 trades show **"Not enough data yet"**, never an empty space.
+- The best window is never chosen by raw win rate — only by **Wilson lower bound** after minimum-N and baseline-margin filters.
+- Samples under 30 trades always carry an explicit small-sample caveat.
+- No example results are hard-coded anywhere — every number on the dashboard is computed from your SQLite data.
+
+---
+
+## Final delivery — pushing to GitHub (VS Code)
+
+1. **Get the latest code** (if you have a local copy from an earlier session):
+
+   ```bash
+   git fetch origin
+   git pull origin arena/01a0240f-trade-timing-journal
+   ```
+
+2. Or **download the ZIP**: on GitHub, switch the branch dropdown to `arena/01a0240f-trade-timing-journal` → `Code → Download ZIP`.
+
+3. **Install & verify locally:**
+
+   ```bash
+   npm install
+   npm test
+   npm start
+   ```
+
+4. **Merge into `main` on GitHub** (recommended — no command line needed):
+   - On your repo page, open the **Pull requests** tab → **New pull request**.
+   - Base: `main` ← Compare: `arena/01a0240f-trade-timing-journal` → **Create pull request** → **Merge pull request** → **Confirm merge**.
+   - Your `main` branch now has the complete app.
+
+5. **Or commit your own local changes from VS Code**: `View → Source Control` → stage all → message like `Session 3 – analytics dashboard` → **✓ Commit** → `… → Push`.
+
+6. **Check the repo does NOT contain**: `data/trades.db`, any `backups/*.db` file, `node_modules/`. (`.gitignore` handles all of them.)
 
 ---
 
 ## Roadmap
 
-- **Session 1 (DONE)** — Foundation + Persistent Backend (you are here)
-- **Session 2 (NEXT)** — Complete frontend: entry experience, log with filters, edit/delete, API integration, styling, persistent retrieval
-- **Session 3** — Analytics + Dashboard: timezone-aware bucketing, Wilson intervals, expectancy, best-window logic (real-only, N≥5, baseline+margin, Wilson lower-bound ranking), Charts, caveats, README finalization
-
----
-
-## Testing Checklist — Session 1
-
-Run through these before marking Session 1 done:
-
-- [ ] `npm install` succeeds
-- [ ] `npm start` creates `data/trades.db` only on first run
-- [ ] `curl http://localhost:3000/api/health` returns `status: ok`, `timezone: Africa/Lagos`
-- [ ] `POST /api/trades` with `btc/usdt` stores as `BTCUSDT`
-- [ ] `POST /api/trades` with `amount: 0.1` stores `pnl_cents: 10`
-- [ ] `POST /api/trades` with invalid `direction` returns `400` with useful `details`
-- [ ] `GET /api/trades?mode=real` vs `?mode=demo` are separate (never mixed)
-- [ ] `PUT` / `PATCH` / `DELETE` work and persist
-- [ ] **Persistence test:** create → `Ctrl+C` → `npm start` → `GET /api/trades` still shows the trade
-- [ ] `npm run backup` creates timestamped file in `backups/`
-- [ ] Restarting server logs `Opened existing database` and `No pending migrations`
-- [ ] `data/trades.db` survives across restarts (check `ls -lh data/`)
-
----
-
-*Built for honest statistics: integer cents, UTC storage, fixed timezone, server validation, real/demo separation, and persistence by design.*
+- **Session 1 (DONE)** — Foundation + Persistent Backend: SQLite, migrations, WAL, CRUD API, validation, backup script.
+- **Session 2 (DONE)** — Frontend + Trade Management: entry form, trade log, filters, edit/delete, timezone-correct timestamps.
+- **Session 3 (DONE)** — Analytics + Dashboard: timezone-aware bucketing, Wilson intervals, expectancy, best-window logic for real AND demo, Chart.js dashboard, tests, documentation.
