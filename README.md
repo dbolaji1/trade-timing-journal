@@ -17,9 +17,10 @@ No React, TypeScript, MongoDB, PostgreSQL, Tailwind, auth, or cloud services.
 
 ---
 
-## Current Status — Session 1 Complete ✅
+## Current Status — Sessions 1 & 2 Complete ✅
 
 **Session 1 — Foundation + Persistent Backend** is finished.
+**Session 2 — Frontend + Trade Management** is finished.
 
 What works right now:
 
@@ -33,9 +34,13 @@ What works right now:
 - ✅ Server-side validation (finite numbers, allowed enums, timestamps, plausible dates)
 - ✅ Money stored as **integer cents** (`pnl_cents`) — never floating point in DB
 - ✅ Asset normalization (`btc/usdt` → `BTCUSDT`)
-- ✅ Timestamps stored as **UTC** (`timestamp_utc` ISO string), bucketed later in **fixed timezone `Africa/Lagos`** (from `config.js`)
+- ✅ Timestamps stored as **UTC** (`timestamp_utc` ISO string); the form converts your local
+      wall-clock time to the exact UTC instant before sending
 - ✅ Backup script (`npm run backup`)
-- ✅ Minimal frontend at `public/index.html` to verify persistence
+- ✅ Full frontend: trade-entry form (auto-filled + editable timestamp, live previews),
+      trade log with Both/Real/Demo filters, inline editing, delete confirmation,
+      live health status, responsive dark UI
+- ✅ Frontend always reads the log from SQLite — nothing lives only in browser state
 
 ### Project Structure
 
@@ -53,9 +58,11 @@ trade-timing-journal/
 │   ├── trades.db-shm   # shared memory file
 │   └── .gitkeep        # keeps folder in git when DB is ignored
 ├── backups/
-│   └── .gitkeep
+│   └── .gitkeep        # `npm run backup` writes timestamped .db files here
 ├── public/
-│   └── index.html      # Session 1 verification UI (form + log + filters)
+│   ├── index.html      # Page structure (form + log + modal + toasts)
+│   ├── styles.css      # All styling (dark, responsive, no framework)
+│   └── app.js          # All frontend logic (vanilla JS, talks to the API)
 ├── package.json
 ├── .gitignore
 └── README.md
@@ -84,7 +91,7 @@ CREATE TABLE schema_version (
 
 ---
 
-## How to Run — Session 1
+## How to Run
 
 ### Prerequisites
 
@@ -145,12 +152,16 @@ Open your browser to:
 http://localhost:3000
 ```
 
-You’ll see the Session 1 verification UI with:
-- Trade entry form
-- Trade log
-- Real/Demo/Both filter
-- Edit/Delete
-- Health check
+You’ll see the full trading UI:
+
+- **Header** — live status (online, trade count, schema version) and the fixed timezone
+- **New Trade form** — asset (auto-normalized, e.g. `btc/usdt` → `BTCUSDT`), direction,
+  outcome, signed P&L amount, Real/Demo toggle, optional notes, and a timestamp that is
+  auto-filled but editable. Live previews show what will be stored (integer cents, exact UTC).
+- **Trade Log** — every trade from SQLite, newest first, with Both / Real only / Demo only
+  filters, a summary line (real and demo P&L always shown separately), **Edit** (loads the
+  trade back into the form) and **Delete** (with confirmation).
+- **Persistence footer** — reminder that everything lives in `data/trades.db`.
 
 ### 5. Verify Persistence (the critical test)
 
@@ -313,9 +324,9 @@ This satisfies: *"Create trade → save → close browser/server → reopen days
 
 ## Roadmap
 
-- **Session 1 (DONE)** — Foundation + Persistent Backend (you are here)
-- **Session 2 (NEXT)** — Complete frontend: entry experience, log with filters, edit/delete, API integration, styling, persistent retrieval
-- **Session 3** — Analytics + Dashboard: timezone-aware bucketing, Wilson intervals, expectancy, best-window logic (real-only, N≥5, baseline+margin, Wilson lower-bound ranking), Charts, caveats, README finalization
+- **Session 1 (DONE)** — Foundation + Persistent Backend
+- **Session 2 (DONE)** — Frontend + Trade Management (you are here)
+- **Session 3 (NEXT)** — Analytics + Dashboard: timezone-aware bucketing, Wilson intervals, expectancy, best-window logic (real-only, N≥5, baseline+margin, Wilson lower-bound ranking), Charts, caveats, README finalization
 
 ---
 

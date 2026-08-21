@@ -16,8 +16,13 @@ data/*.sqlite-shm
 !data/.gitkeep
 !backups/.gitkeep
 
-# Backups (optional: uncomment to ignore backups too)
-# backups/
+# Backups contain the same private trade data as the live DB — never push them.
+backups/*.db
+backups/*.db-wal
+backups/*.db-shm
+backups/*.sqlite
+backups/*.sqlite-wal
+backups/*.sqlite-shm
 
 # OS
 .DS_Store
