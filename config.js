@@ -15,7 +15,9 @@ const CONFIG = {
 
   // Database file lives inside the project so data survives restarts
   // unless you explicitly delete it.
-  DB_PATH: "./data/trades.db",
+  // TT_DB_PATH is only for automated tests (points at a temp file);
+  // in normal use leave it unset so the real data/trades.db is used.
+  DB_PATH: process.env.TT_DB_PATH || "./data/trades.db",
 
   // Server port
   PORT: process.env.PORT || 3000,
@@ -24,6 +26,21 @@ const CONFIG = {
   MIN_TIMESTAMP: new Date("2000-01-01T00:00:00.000Z"),
   // Allow up to 1 day in the future to account for clock skew, but not years ahead
   MAX_FUTURE_MS: 24 * 60 * 60 * 1000,
+
+  // Analytics thresholds (Session 3)
+  ANALYTICS: {
+    // A bucket must have at least this many trades before we show statistics.
+    MIN_N: 3,
+    // Best-window eligibility: minimum trades in the bucket.
+    BEST_MIN_N: 5,
+    // Best-window eligibility: bucket win rate must EXCEED the mode's overall
+    // baseline win rate by this margin (5 percentage points).
+    BEST_MARGIN: 0.05,
+    // Below this many trades, the best-window callout shows a small-sample caveat.
+    BEST_SMALL_SAMPLE_N: 30,
+    // z-score for 95% Wilson confidence intervals.
+    WILSON_Z: 1.96,
+  },
 };
 
 module.exports = CONFIG;

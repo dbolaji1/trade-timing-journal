@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-package-lock.json
 
 # Database - KEEP the file for personal use, but ignore in public GitHub push
 # If you want to backup your history privately, see scripts/backup.js

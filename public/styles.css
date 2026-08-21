@@ -425,6 +425,144 @@ tr.row-editing td:first-child {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* ---------- Tabs ---------- */
+
+.tabs {
+  display: flex;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.9rem 1rem 0;
+}
+
+.tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  padding: 0.45rem 1.15rem;
+  border-radius: 999px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { background: var(--accent); color: #0b1120; }
+
+/* ---------- Dashboard ---------- */
+
+.dash { padding: 1.25rem; flex: 1; }
+
+.dash-inner {
+  width: min(1280px, 100%);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.dash-head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.dash-head > div:first-child { flex: 1; min-width: 260px; }
+.dash-head .hint { margin: 0; }
+
+.dash-error {
+  background: #2d1220;
+  border: 1px solid #7f1d1d;
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  color: #fca5a5;
+  font-size: 0.85rem;
+}
+
+/* KPI cards */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.25rem;
+}
+
+.kpi {
+  background: var(--card);
+  border: 1px solid var(--card-edge);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.2rem;
+}
+.kpi.demo { border-left-color: var(--amber); }
+.kpi h3 { font-size: 0.95rem; margin-bottom: 0.4rem; }
+.kpi h3 .chip { margin-left: 0.4rem; }
+.kpi-n { font-size: 1.45rem; font-weight: 800; color: var(--text); }
+
+.kpi-rows { margin-top: 0.6rem; display: flex; flex-direction: column; gap: 0.35rem; }
+.kpi-rows > div { display: flex; justify-content: space-between; gap: 1rem; font-size: 0.88rem; color: var(--muted); }
+.kpi-rows b { color: var(--text); font-weight: 700; }
+.kpi-rows small { color: var(--faint); }
+
+.caveat {
+  margin-top: 0.7rem;
+  font-size: 0.78rem;
+  color: var(--amber);
+  background: rgba(252, 211, 77, 0.08);
+  border: 1px solid rgba(252, 211, 77, 0.25);
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+}
+
+/* Best-window cards */
+.best-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.25rem;
+}
+@media (max-width: 900px) { .best-grid { grid-template-columns: 1fr; } }
+
+.best-card {
+  background: var(--card);
+  border: 1px solid var(--card-edge);
+  border-top: 4px solid var(--green);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.2rem;
+}
+.best-card.demo { border-top-color: var(--amber); }
+.best-card h3 { font-size: 0.95rem; display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+.best-card h4 { font-size: 0.82rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin: 0.9rem 0 0.4rem; }
+
+.best-title { font-size: 1.15rem; font-weight: 800; color: var(--green); margin-bottom: 0.5rem; }
+.best-card.demo .best-title { color: var(--amber); }
+
+.best-line { display: flex; justify-content: space-between; gap: 1rem; font-size: 0.88rem; color: var(--muted); }
+.best-line b { color: var(--text); }
+
+.best-none { color: var(--muted); font-size: 0.88rem; line-height: 1.6; }
+.best-note { font-size: 0.78rem; margin-top: 0.6rem; }
+
+/* Charts */
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
+@media (max-width: 900px) { .chart-grid { grid-template-columns: 1fr; } }
+
+.chart-title { font-size: 0.82rem; color: var(--muted); font-weight: 600; margin-bottom: 0.4rem; }
+
+.chart-box {
+  position: relative;
+  height: 300px;
+  background: var(--bg);
+  border: 1px solid var(--card-edge);
+  border-radius: 8px;
+  padding: 0.6rem;
+}
+
+.empty-cell { color: var(--amber); font-size: 0.78rem; font-style: italic; }
+
+/* Methodology notes */
+.notes-card ul { margin-left: 1.2rem; color: var(--muted); font-size: 0.85rem; }
+.notes-card li { margin-bottom: 0.35rem; }
+.notes-card strong { color: var(--text); }
+
 /* ---------- Footer ---------- */
 
 footer {

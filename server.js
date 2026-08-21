@@ -12,6 +12,7 @@ const path = require("path");
 const CONFIG = require("./config");
 const { getDb } = require("./db");
 const { validateTrade, formatCents } = require("./validation");
+const { computeAnalytics } = require("./analytics");
 
 const app = express();
 
@@ -239,29 +240,62 @@ app.delete("/api/trades/:id", (req, res) => {
   res.json({ success: true, deleted_id: id });
 });
 
+// Analytics: computed server-side from SQLite on every request.
+// Real and demo are separate blocks and are NEVER blended.
+app.get("/api/analytics", (req, res) => {
+  try {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM trades").all();
+    const result = computeAnalytics(rows);
+    res.json({
+      timezone: CONFIG.TIMEZONE,
+      generated_at: new Date().toISOString(),
+      thresholds: {
+        minN: CONFIG.ANALYTICS.MIN_N,
+        bestMinN: CONFIG.ANALYTICS.BEST_MIN_N,
+        bestMarginPct: CONFIG.ANALYTICS.BEST_MARGIN * 100,
+        bestSmallSampleN: CONFIG.ANALYTICS.BEST_SMALL_SAMPLE_N,
+        wilsonZ: CONFIG.ANALYTICS.WILSON_Z,
+      },
+      real: result.real,
+      demo: result.demo,
+    });
+  } catch (err) {
+    console.error("[GET /api/analytics] Error:", err);
+    res.status(500).json({ error: "Could not compute analytics." });
+  }
+});
+
 // Fallback to index.html for SPA routes (if any)
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// Initialize DB before starting server (safe to run every time)
-getDb();
+// Start the server only when this file is run directly (node server.js).
+// When required by tests, the app is exported without listening.
+if (require.main === module) {
+  // Initialize DB before starting server (safe to run every time)
+  getDb();
 
-const server = app.listen(CONFIG.PORT, "0.0.0.0", () => {
-  console.log(`\n✓ Trade Timing Journal running at http://localhost:${CONFIG.PORT}`);
-  console.log(`  Timezone (fixed): ${CONFIG.TIMEZONE}`);
-  console.log(`  Database: ${path.resolve(CONFIG.DB_PATH)} (WAL mode, persistent)`);
-  console.log(`  Health: http://localhost:${CONFIG.PORT}/api/health\n`);
-});
-
-// Graceful shutdown
-process.on("SIGINT", () => {
-  console.log("\n[Server] Shutting down...");
-  server.close(() => {
-    const { closeDb } = require("./db");
-    closeDb();
-    process.exit(0);
+  const server = app.listen(CONFIG.PORT, "0.0.0.0", () => {
+    console.log(`\n✓ Trade Timing Journal running at http://localhost:${CONFIG.PORT}`);
+    console.log(`  Timezone (fixed): ${CONFIG.TIMEZONE}`);
+    console.log(`  Database: ${path.resolve(CONFIG.DB_PATH)} (WAL mode, persistent)`);
+    console.log(`  Health: http://localhost:${CONFIG.PORT}/api/health`);
+    console.log(`  Analytics: http://localhost:${CONFIG.PORT}/api/analytics\n`);
   });
-});
+
+  // Graceful shutdown
+  const shutdown = () => {
+    console.log("\n[Server] Shutting down...");
+    server.close(() => {
+      const { closeDb } = require("./db");
+      closeDb();
+      process.exit(0);
+    });
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}
 
 module.exports = app;

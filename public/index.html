@@ -23,7 +23,13 @@
     </div>
   </header>
 
-  <main class="layout">
+  <!-- ================= Tabs ================= -->
+  <nav class="tabs" aria-label="App views">
+    <button class="tab active" data-view="journal" aria-selected="true">Journal</button>
+    <button class="tab" data-view="dashboard" aria-selected="false">Analytics Dashboard</button>
+  </nav>
+
+  <main class="layout" id="journalView">
 
     <!-- ================= Trade entry ================= -->
     <section class="card" id="entryCard" aria-label="Trade entry form">
@@ -136,6 +142,112 @@
 
   </main>
 
+  <!-- ================= Analytics Dashboard ================= -->
+  <section id="dashboardView" hidden class="dash">
+    <div class="dash-inner">
+
+      <div class="card dash-head">
+        <div>
+          <h2>Analytics Dashboard</h2>
+          <p class="hint" id="dashHint">Loading analytics…</p>
+        </div>
+        <div class="filters" role="group" aria-label="Chart series">
+          <button class="pill active" data-amode="both" aria-pressed="true">Both</button>
+          <button class="pill" data-amode="real" aria-pressed="false">Real</button>
+          <button class="pill" data-amode="demo" aria-pressed="false">Demo</button>
+        </div>
+        <button class="btn ghost small" id="dashReloadBtn" title="Recompute from SQLite">↻ Reload</button>
+      </div>
+
+      <div id="dashError" class="dash-error" hidden></div>
+
+      <div class="kpis" id="kpiCards"></div>
+
+      <div class="best-grid" id="bestCards"></div>
+
+      <div class="card">
+        <h2>Hourly performance</h2>
+        <p class="hint">Win rate with 95% Wilson confidence bands (switch to Real or Demo to see the band) · expectancy per hour · real and demo always shown as separate series.</p>
+        <div class="chart-grid">
+          <div>
+            <h3 class="chart-title">Hourly win rate</h3>
+            <div class="chart-box"><canvas id="chartHourlyWin"></canvas></div>
+          </div>
+          <div>
+            <h3 class="chart-title">Hourly expectancy (avg P&amp;L)</h3>
+            <div class="chart-box"><canvas id="chartHourlyExp"></canvas></div>
+          </div>
+        </div>
+        <div class="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Hour (<span id="tzHour">…</span>)</th>
+                <th>Real N</th>
+                <th>Real win rate</th>
+                <th>Real 95% CI</th>
+                <th>Real avg P&amp;L</th>
+                <th>Demo N</th>
+                <th>Demo win rate</th>
+                <th>Demo 95% CI</th>
+                <th>Demo avg P&amp;L</th>
+              </tr>
+            </thead>
+            <tbody id="hourlyBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Weekday performance</h2>
+        <p class="hint">Same statistics per day of week. Weekdays come from the configured timezone, not your browser.</p>
+        <div class="chart-grid">
+          <div>
+            <h3 class="chart-title">Weekday win rate</h3>
+            <div class="chart-box"><canvas id="chartWeekdayWin"></canvas></div>
+          </div>
+          <div>
+            <h3 class="chart-title">Weekday expectancy (avg P&amp;L)</h3>
+            <div class="chart-box"><canvas id="chartWeekdayExp"></canvas></div>
+          </div>
+        </div>
+        <div class="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Day (<span id="tzDay">…</span>)</th>
+                <th>Real N</th>
+                <th>Real win rate</th>
+                <th>Real 95% CI</th>
+                <th>Real avg P&amp;L</th>
+                <th>Demo N</th>
+                <th>Demo win rate</th>
+                <th>Demo 95% CI</th>
+                <th>Demo avg P&amp;L</th>
+              </tr>
+            </thead>
+            <tbody id="weekdayBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card notes-card">
+        <h2>How to read these numbers</h2>
+        <ul>
+          <li>All statistics are computed from the trades in <strong>SQLite</strong>, on the server, every time you load or reload this dashboard. Nothing here is hard-coded.</li>
+          <li><strong>Real and demo are always separate.</strong> They are never blended into one series, and each mode is compared against its own baseline.</li>
+          <li>A bucket needs at least <strong>3 trades</strong> before any statistics are shown — otherwise you see "Not enough data yet", never a blank space.</li>
+          <li>Win rates come with a <strong>95% Wilson confidence interval</strong>. Wide intervals mean few trades — treat those numbers with caution.</li>
+          <li><strong>Expectancy (average P&amp;L)</strong> is shown next to win rate: a high win rate does not automatically mean profitable.</li>
+          <li><strong>Best window</strong> = at least 5 trades of that mode, win rate more than 5 percentage points above that mode's baseline, ranked by the <em>lower bound</em> of the Wilson interval — not by raw win rate.</li>
+          <li>Samples under 30 trades are always flagged as small samples.</li>
+          <li>Timestamps are stored in UTC and bucketed in the fixed configured timezone (shown in the header).</li>
+        </ul>
+      </div>
+
+    </div>
+  </section>
+
   <footer>
     <p>
       Persistence: every trade is written straight to <code>data/trades.db</code> on the server.
@@ -160,6 +272,8 @@
   <!-- ================= Toasts ================= -->
   <div class="toasts" id="toasts" aria-live="polite"></div>
 
+  <script src="vendor/chart.umd.js"></script>
   <script src="app.js"></script>
+  <script src="dashboard.js"></script>
 </body>
 </html>

@@ -411,6 +411,8 @@ function fillExample() {
 
 async function refreshAll() {
   await Promise.all([loadTrades(), loadHealth()]);
+  // Tell the analytics dashboard (if open) that the database changed.
+  if (typeof window.__ttDataChanged === "function") window.__ttDataChanged();
 }
 
 /* ---------- Wiring ---------- */
