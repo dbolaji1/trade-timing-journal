@@ -8,7 +8,7 @@ A personal trading journal designed to determine — from **your actual historic
 
 ## What the application does
 
-1. **Journal** — enter trades (asset, direction, outcome, signed P&L, real/demo, notes, timestamp), edit them, delete them, and filter the log by Real / Demo / Both. Everything reads from and writes to SQLite.
+1. **Journal** — enter trades (asset, direction, outcome, P&L, real/demo, notes, timestamp), edit them, delete them, and filter the log by Real / Demo / Both. Everything reads from and writes to SQLite. The **sign of the P&L is derived from the outcome** (win = +, loss = −, breakeven = 0), so the money can never contradict the result label.
 2. **Analytics Dashboard** — hourly and weekday statistics per mode:
    - trade count, win rate, **expectancy (average P&L)**, and a **95% Wilson confidence interval** for every bucket with enough data,
    - "Not enough data yet" for buckets with fewer than 3 trades — never a misleading blank,
@@ -134,7 +134,7 @@ Validation rules (server-side, returns `400` with a `details` array):
 
 - asset required → normalized, ≤20 chars
 - direction ∈ {long, short}; outcome ∈ {win, loss, breakeven}; mode ∈ {real, demo}
-- amount must be a **finite number**, stored as integer cents
+- amount must be a **finite number**, stored as integer cents; the **sign is derived from the outcome** (`win` → `+`, `loss` → `−`, `breakeven` → `0`), so entering a magnitude is enough and a conflicting sign is corrected
 - timestamp must parse and be plausible (≥2000, ≤24h in the future)
 - notes ≤2000 chars
 

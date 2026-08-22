@@ -11,6 +11,7 @@ const {
   normalizeAsset,
   toCents,
   formatCents,
+  derivePnlSign,
   validateTrade,
 } = require("../validation");
 
@@ -136,4 +137,33 @@ test("validateTrade: pnl_cents integer input is accepted directly", () => {
   });
   assert.equal(r.valid, true, JSON.stringify(r.errors));
   assert.equal(r.sanitized.pnl_cents, 12345);
+});
+
+test("validateTrade: P&L sign is derived from the outcome", () => {
+  const base = { asset: "BTC", direction: "long", mode: "real", timestamp: "2026-08-10T08:12:00Z" };
+
+  // win is always positive, even if a negative sign was typed
+  const win = validateTrade({ ...base, outcome: "win", amount: -42.5 });
+  assert.equal(win.valid, true, JSON.stringify(win.errors));
+  assert.equal(win.sanitized.outcome, "win");
+  assert.equal(win.sanitized.pnl_cents, 4250);
+
+  // loss is always negative, even if a positive sign was typed
+  const loss = validateTrade({ ...base, outcome: "loss", amount: 18.25 });
+  assert.equal(loss.valid, true, JSON.stringify(loss.errors));
+  assert.equal(loss.sanitized.outcome, "loss");
+  assert.equal(loss.sanitized.pnl_cents, -1825);
+
+  // breakeven is exactly zero, regardless of the value typed
+  const be = validateTrade({ ...base, outcome: "breakeven", amount: 12.5 });
+  assert.equal(be.valid, true, JSON.stringify(be.errors));
+  assert.equal(be.sanitized.pnl_cents, 0);
+});
+
+test("derivePnlSign: sign applied to a direct pnl_cents input too", () => {
+  assert.equal(derivePnlSign("win", -12345), 12345);
+  assert.equal(derivePnlSign("loss", 12345), -12345);
+  assert.equal(derivePnlSign("breakeven", 9876), 0);
+  assert.equal(derivePnlSign("win", 100), 100);
+  assert.equal(derivePnlSign("loss", -100), -100);
 });

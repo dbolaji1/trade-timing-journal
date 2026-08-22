@@ -39,6 +39,28 @@ function formatCents(cents) {
 }
 
 /**
+ * Derive the sign of the P&L from the trade's outcome.
+ * The amount the user types in is treated as a magnitude; the sign is
+ * determined by the result so the money can never contradict the outcome:
+ *   - "win"        -> positive
+ *   - "loss"       -> negative
+ *   - "breakeven"  -> exactly zero
+ * This stops a mistyped sign from corrupting win-rate / expectancy analytics.
+ */
+function derivePnlSign(outcome, pnlCents) {
+  switch (outcome) {
+    case "win":
+      return Math.abs(pnlCents);
+    case "loss":
+      return -Math.abs(pnlCents);
+    case "breakeven":
+      return 0;
+    default:
+      return pnlCents;
+  }
+}
+
+/**
  * Validate and sanitize a trade payload.
  * Returns { valid: boolean, errors: string[], sanitized: object }
  * sanitized contains DB-ready values (asset normalized, pnl_cents, timestamp_utc)
@@ -183,6 +205,14 @@ function validateTrade(payload, options = { partial: false }) {
     sanitized.notes = null;
   }
 
+  // --- derive the P&L sign from the outcome ---
+  // The outcome is known and the (magnitude) cents is valid; force the sign to
+  // match the outcome so a "win" is never stored as a negative P&L and a "loss"
+  // is never stored as a positive one. Breakeven is always zero.
+  if (sanitized.outcome !== undefined && sanitized.pnl_cents !== undefined) {
+    sanitized.pnl_cents = derivePnlSign(sanitized.outcome, sanitized.pnl_cents);
+  }
+
   return {
     valid: errors.length === 0,
     errors,
@@ -194,6 +224,7 @@ module.exports = {
   normalizeAsset,
   toCents,
   formatCents,
+  derivePnlSign,
   validateTrade,
   ALLOWED_DIRECTIONS,
   ALLOWED_OUTCOMES,
