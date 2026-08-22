@@ -43,6 +43,15 @@ function usd(cents) {
   return sign + "$" + Math.floor(abs / 100).toLocaleString("en-US") + "." + String(abs % 100).padStart(2, "0");
 }
 
+// Client-side mirror of the server's derivePnlSign: the SIGN of the P&L comes
+// from the Outcome, never from the number the user typed.
+function deriveCentsFromOutcome(outcome, cents) {
+  if (outcome === "win") return Math.abs(cents);
+  if (outcome === "loss") return -Math.abs(cents);
+  if (outcome === "breakeven") return 0;
+  return cents;
+}
+
 /* ---------- Time helpers ---------- */
 
 // Format a UTC ISO string in the configured fixed timezone.
@@ -227,14 +236,20 @@ function updatePreviews() {
     assetPreview.textContent = "";
   }
 
-  // Amount: show integer-cent conversion (no floating-point errors).
+  // Amount: show integer-cent conversion. The sign is derived from Outcome,
+  // so a win is always positive, a loss always negative, breakeven = 0.
   const rawAmount = $("amount").value;
+  const outcome = $("outcome").value;
   const amountPreview = $("amountPreview");
   if (rawAmount !== "" && Number.isFinite(Number(rawAmount))) {
-    const cents = Math.round(Number(rawAmount) * 100);
-    amountPreview.textContent = "Will be stored as " + cents + " integer cents.";
+    const cents = Math.round(Math.abs(Number(rawAmount)) * 100); // magnitude
+    const signed = deriveCentsFromOutcome(outcome, cents);
+    const signLabel = signed > 0 ? "+" : signed < 0 ? "−" : "±0";
+    amountPreview.textContent =
+      "Outcome " + outcome + " → " + signLabel + "$" + (signed / 100).toFixed(2) +
+      " (" + signed + " integer cents).";
   } else {
-    amountPreview.textContent = "Stored as integer cents — no floating-point errors.";
+    amountPreview.textContent = "The sign is derived from Outcome: win = +, loss = −, breakeven = 0.";
   }
 
   // Timestamp: show exactly what gets stored in UTC and how it displays.
@@ -429,6 +444,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   $("asset").addEventListener("input", updatePreviews);
   $("amount").addEventListener("input", updatePreviews);
+  $("outcome").addEventListener("change", updatePreviews);
   $("timestamp").addEventListener("input", updatePreviews);
 
   // Table buttons (event delegation: one listener for all rows).

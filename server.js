@@ -11,7 +11,7 @@ const cors = require("cors");
 const path = require("path");
 const CONFIG = require("./config");
 const { getDb } = require("./db");
-const { validateTrade, formatCents } = require("./validation");
+const { validateTrade, formatCents, derivePnlSign } = require("./validation");
 const { computeAnalytics } = require("./analytics");
 
 const app = express();
@@ -194,6 +194,15 @@ app.patch("/api/trades/:id", (req, res) => {
   const { valid, errors, sanitized } = validateTrade(req.body, { partial: true });
   if (!valid) {
     return res.status(400).json({ error: "Validation failed.", details: errors });
+  }
+
+  // If the outcome or the amount is being changed, re-derive the P&L sign from
+  // the FINAL outcome so a partial edit can never leave a win/loss with the
+  // wrong sign (which would corrupt win-rate / expectancy analytics).
+  if (sanitized.outcome !== undefined || sanitized.pnl_cents !== undefined) {
+    const finalOutcome = sanitized.outcome !== undefined ? sanitized.outcome : existing.outcome;
+    const finalPnlCents = sanitized.pnl_cents !== undefined ? sanitized.pnl_cents : existing.pnl_cents;
+    sanitized.pnl_cents = derivePnlSign(finalOutcome, finalPnlCents);
   }
 
   // Build dynamic update
