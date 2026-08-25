@@ -86,10 +86,10 @@ app.get("/api/trades", (req, res) => {
   let rows;
   if (mode === "real" || mode === "demo") {
     rows = db
-      .prepare("SELECT * FROM trades WHERE mode = ? ORDER BY timestamp_utc DESC, id DESC")
+      .prepare("SELECT * FROM trades WHERE mode = ? ORDER BY id DESC")
       .all(mode);
   } else if (mode === "all" || !mode) {
-    rows = db.prepare("SELECT * FROM trades ORDER BY timestamp_utc DESC, id DESC").all();
+    rows = db.prepare("SELECT * FROM trades ORDER BY id DESC").all();
   } else {
     return res.status(400).json({ error: "Invalid mode filter. Use real, demo, or all." });
   }
@@ -329,6 +329,14 @@ app.post("/api/import/confirm", (req, res) => {
     VALUES (@asset, @direction, @outcome, @pnl_cents, @mode, @notes, @timestamp_utc)
   `);
 
+  const ordered = trades.slice().sort((a, b) => {
+    const ta = String(a.timestamp_utc || a.timestamp || "");
+    const tb = String(b.timestamp_utc || b.timestamp || "");
+    if (ta < tb) return -1;
+    if (ta > tb) return 1;
+    return 0;
+  });
+
   const run = db.transaction((list) => {
     list.forEach((raw, i) => {
       const { valid, errors, sanitized } = validateTrade(raw, { partial: false });
@@ -357,7 +365,7 @@ app.post("/api/import/confirm", (req, res) => {
   });
 
   try {
-    run(trades);
+    run(ordered);
     res.json({
       imported: imported.length,
       skipped_duplicates: skipped.length,

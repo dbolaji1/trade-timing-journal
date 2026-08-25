@@ -6,6 +6,7 @@
 "use strict";
 
 const XLSX = require("xlsx");
+const CONFIG = require("./config");
 const { validateTrade, formatCents } = require("./validation");
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8 MB
@@ -75,43 +76,73 @@ function mapColumns(headers) {
 }
 
 function excelSerialToDate(n) {
-  // Excel serial: days since 1899-12-30 (with the 1900 leap-year bug ignored
-  // for values after 1900-03-01, which all our trades are).
   const ms = Math.round((Number(n) - 25569) * 86400 * 1000);
   return new Date(ms);
 }
 
+/**
+ * Interpret a naive wall-clock time as CONFIG.TIMEZONE (Africa/Lagos)
+ * and return the matching UTC ISO string. Broker exports almost never
+ * include a timezone; showing them in the journal TZ should match the file.
+ */
+function wallClockToUtcIso(year, month, day, hour, minute, second, tz) {
+  const zone = tz || CONFIG.TIMEZONE;
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, second);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(utcGuess));
+  const get = (type) => Number(parts.find((p) => p.type === type).value);
+  const asWall = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
+  return new Date(utcGuess - (asWall - utcGuess)).toISOString();
+}
+
+function partsToUtcIso(y, mo, d, h, mi, s) {
+  return wallClockToUtcIso(Number(y), Number(mo), Number(d), Number(h) || 0, Number(mi) || 0, Number(s) || 0);
+}
+
 function coerceTimestamp(value) {
   if (value === null || value === undefined || value === "") return value;
-  if (value instanceof Date) return isNaN(value.getTime()) ? String(value) : value.toISOString();
+  if (value instanceof Date) {
+    if (isNaN(value.getTime())) return String(value);
+    return partsToUtcIso(
+      value.getUTCFullYear(), value.getUTCMonth() + 1, value.getUTCDate(),
+      value.getUTCHours(), value.getUTCMinutes(), value.getUTCSeconds()
+    );
+  }
   if (typeof value === "number" && Number.isFinite(value)) {
-    // Excel serial dates are typically between ~20000 and ~60000 for 1954–2064.
     if (value > 20000 && value < 80000) {
       const d = excelSerialToDate(value);
-      if (!isNaN(d.getTime())) return d.toISOString();
+      if (!isNaN(d.getTime())) {
+        return partsToUtcIso(
+          d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(),
+          d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()
+        );
+      }
     }
-    // Unix seconds / ms
     const d = value > 1e12 ? new Date(value) : new Date(value * 1000);
     if (!isNaN(d.getTime())) return d.toISOString();
   }
   const s = String(value).trim();
   if (!s) return s;
-  // "YYYY-MM-DD HH:MM[:SS]" → treat as UTC if no timezone
-  const spaceDate = s.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/);
-  if (spaceDate) {
-    const iso = spaceDate[1] + "T" + spaceDate[2] + (spaceDate[2].length === 5 ? ":00" : "") + "Z";
-    const d = new Date(iso);
+  // Already has an explicit timezone — keep as an absolute instant.
+  if (/[zZ]$/.test(s) || /[+-]\d{2}:?\d{2}$/.test(s)) {
+    const d = new Date(s);
     if (!isNaN(d.getTime())) return d.toISOString();
   }
-  // "DD.MM.YYYY HH:MM[:SS]" or "DD/MM/YYYY HH:MM" (common broker exports)
+  const spaceDate = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?$/);
+  if (spaceDate) {
+    return partsToUtcIso(spaceDate[1], spaceDate[2], spaceDate[3], spaceDate[4], spaceDate[5], spaceDate[6] || 0);
+  }
   const dmy = s.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if (dmy) {
-    const iso =
-      dmy[3] + "-" + dmy[2].padStart(2, "0") + "-" + dmy[1].padStart(2, "0") +
-      "T" + (dmy[4] || "00").padStart(2, "0") + ":" + (dmy[5] || "00").padStart(2, "0") +
-      ":" + (dmy[6] || "00").padStart(2, "0") + "Z";
-    const d = new Date(iso);
-    if (!isNaN(d.getTime())) return d.toISOString();
+    return partsToUtcIso(dmy[3], dmy[2], dmy[1], dmy[4] || 0, dmy[5] || 0, dmy[6] || 0);
   }
   return s;
 }

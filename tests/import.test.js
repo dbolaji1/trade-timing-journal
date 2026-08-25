@@ -127,4 +127,6 @@ test("Pocket Option-style export infers outcome from Profit and mode from filena
   assert.equal(result.rows[1].sanitized.direction, "short");
   assert.equal(result.rows[1].sanitized.outcome, "loss");
   assert.equal(result.rows[2].sanitized.outcome, "breakeven");
+  // Naive file times are Africa/Lagos (UTC+1), so 07:12 Lagos → 06:12 UTC.
+  assert.equal(result.rows[0].sanitized.timestamp_utc, "2026-08-10T06:12:00.000Z");
 });
