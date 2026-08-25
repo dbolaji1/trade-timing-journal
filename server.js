@@ -280,7 +280,7 @@ app.post("/api/import/preview", (req, res) => {
       const mapping = mapColumns(headers);
       const db = getDb();
       const existing = existingIdentitySet(db);
-      const classified = classifyRows(rows, mapping, existing);
+      const classified = classifyRows(rows, mapping, existing, { filename: req.file.originalname });
 
       const previewRows = classified.rows.slice(0, 200).map((r) => ({
         rowNumber: r.rowNumber,

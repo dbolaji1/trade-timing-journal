@@ -11,39 +11,45 @@ const { validateTrade, formatCents } = require("./validation");
 const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8 MB
 const MAX_ROWS = 10000;
 
-const REQUIRED_FIELDS = ["asset", "direction", "outcome", "amount", "mode", "timestamp"];
+// Columns that must exist in the file. Outcome and mode can be inferred
+// (P&L sign, and demo/real in the filename) so they are not required headers.
+const REQUIRED_FIELDS = ["asset", "direction", "amount", "timestamp"];
 
 const COLUMN_ALIASES = {
   asset: [
     "asset", "symbol", "pair", "ticker", "instrument", "market", "currency pair",
-    "currencypair", "underlying",
+    "currencypair", "underlying", "currency", "deal",
   ],
   direction: [
-    "direction", "side", "type", "trade type", "tradetype", "callput", "call/put",
-    "call put", "action", "position", "buy/sell", "buysell",
+    "direction", "side", "action", "option", "callput", "call/put", "call put",
+    "position", "buy/sell", "buysell", "trade type", "tradetype", "type",
   ],
   outcome: [
     "outcome", "result", "winloss", "win/loss", "status", "trade result",
     "traderesult", "wonlost",
   ],
+  // Prefer net P&L columns over stake/investment ("amount" on Pocket Option).
   amount: [
-    "amount", "pnl", "p&l", "pl", "profit", "profitloss", "profit/loss",
-    "payout", "netpnl", "net p&l", "net pl", "pnl amount", "usd", "profit usd",
+    "profit", "p&l", "pnl", "pl", "profitloss", "profit/loss", "net profit",
+    "netpnl", "net p&l", "net pl", "pnl amount", "profit usd", "income",
+    "payout", "amount", "investment", "stake", "bet", "usd",
   ],
   mode: [
     "mode", "account", "account type", "accounttype", "real/demo", "realdemo",
     "environment", "live",
   ],
   timestamp: [
-    "timestamp", "timestamp_utc", "time", "datetime", "date", "date/time",
-    "date time", "opentime", "open time", "closed time", "closetime",
-    "entry time", "entrytime", "trade time", "tradetime", "executed at",
+    "timestamp", "timestamp_utc", "open time", "opentime", "opened", "opened at",
+    "close time", "closetime", "closed", "closed at", "entry time", "entrytime",
+    "trade time", "tradetime", "executed at", "datetime", "date/time", "date time",
+    "time", "date",
   ],
   notes: ["notes", "note", "comment", "comments", "remark", "remarks", "description"],
 };
 
 function normalizeHeader(h) {
   return String(h || "")
+    .replace(/^\uFEFF/, "")
     .trim()
     .toLowerCase()
     .replace(/[_-]+/g, " ")
@@ -97,7 +103,47 @@ function coerceTimestamp(value) {
     const d = new Date(iso);
     if (!isNaN(d.getTime())) return d.toISOString();
   }
+  // "DD.MM.YYYY HH:MM[:SS]" or "DD/MM/YYYY HH:MM" (common broker exports)
+  const dmy = s.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (dmy) {
+    const iso =
+      dmy[3] + "-" + dmy[2].padStart(2, "0") + "-" + dmy[1].padStart(2, "0") +
+      "T" + (dmy[4] || "00").padStart(2, "0") + ":" + (dmy[5] || "00").padStart(2, "0") +
+      ":" + (dmy[6] || "00").padStart(2, "0") + "Z";
+    const d = new Date(iso);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
   return s;
+}
+
+function parseAmount(raw) {
+  if (raw === null || raw === undefined || raw === "") return raw;
+  if (typeof raw === "number") return raw;
+  let s = String(raw).trim().replace(/\s/g, "").replace(/[$€£]/g, "");
+  if (!s) return raw;
+  if (s.includes(",") && s.includes(".")) {
+    if (s.lastIndexOf(",") > s.lastIndexOf(".")) s = s.replace(/\./g, "").replace(",", ".");
+    else s = s.replace(/,/g, "");
+  } else if ((s.match(/,/g) || []).length === 1 && !s.includes(".")) {
+    s = s.replace(",", ".");
+  }
+  const n = Number(s);
+  return Number.isFinite(n) ? n : raw;
+}
+
+function inferOutcomeFromAmount(amount) {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return undefined;
+  if (n > 0) return "win";
+  if (n < 0) return "loss";
+  return "breakeven";
+}
+
+function inferModeFromFilename(filename) {
+  const n = String(filename || "").toLowerCase();
+  if (n.includes("demo") || n.includes("practice") || n.includes("paper")) return "demo";
+  if (n.includes("real") || n.includes("live") || n.includes("funded")) return "real";
+  return null;
 }
 
 function normalizeDirection(raw) {
@@ -153,7 +199,14 @@ function parseWorkbook(buffer, filename, mime) {
 
   let workbook;
   try {
-    workbook = XLSX.read(buffer, { type: "buffer", cellDates: true, raw: false });
+    const opts = { type: "buffer", cellDates: false, raw: true };
+    if (kind === "csv") {
+      const firstLine = buffer.toString("utf8").split(/\r?\n/)[0] || "";
+      const semis = (firstLine.match(/;/g) || []).length;
+      const commas = (firstLine.match(/,/g) || []).length;
+      if (semis > commas) opts.FS = ";";
+    }
+    workbook = XLSX.read(buffer, opts);
   } catch (err) {
     throw Object.assign(new Error("Could not read the spreadsheet. The file may be corrupted."), { code: "CORRUPT" });
   }
@@ -163,7 +216,7 @@ function parseWorkbook(buffer, filename, mime) {
     throw Object.assign(new Error("The spreadsheet has no sheets."), { code: "EMPTY" });
   }
   const sheet = workbook.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: true });
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: true, blankrows: false });
   if (!rows.length) {
     throw Object.assign(new Error("The file has no data rows."), { code: "EMPTY" });
   }
@@ -175,18 +228,28 @@ function parseWorkbook(buffer, filename, mime) {
   return { kind, headers, rows };
 }
 
-function rowToPayload(row, mapping) {
+function rowToPayload(row, mapping, options = {}) {
   const get = (field) => {
     const col = mapping[field];
     if (!col) return undefined;
     return row[col];
   };
+  const amount = parseAmount(get("amount"));
+  let outcome = normalizeOutcome(get("outcome"));
+  if (!outcome || !["win", "loss", "breakeven"].includes(String(outcome).toLowerCase())) {
+    const inferred = inferOutcomeFromAmount(amount);
+    if (inferred) outcome = inferred;
+  }
+  let mode = normalizeMode(get("mode"));
+  if (!mode || !["real", "demo"].includes(String(mode).toLowerCase())) {
+    if (options.defaultMode) mode = options.defaultMode;
+  }
   const payload = {
     asset: get("asset"),
     direction: normalizeDirection(get("direction")),
-    outcome: normalizeOutcome(get("outcome")),
-    amount: get("amount"),
-    mode: normalizeMode(get("mode")),
+    outcome,
+    amount,
+    mode,
     timestamp: coerceTimestamp(get("timestamp")),
   };
   if (mapping.notes) {
@@ -200,8 +263,11 @@ function rowToPayload(row, mapping) {
  * Classify every row against existing DB trades.
  * existingKeys: Set of identityKey strings already in SQLite.
  */
-function classifyRows(rows, mapping, existingKeys) {
+function classifyRows(rows, mapping, existingKeys, options = {}) {
+  const defaultMode = options.defaultMode || inferModeFromFilename(options.filename);
   const missingRequired = REQUIRED_FIELDS.filter((f) => !mapping[f]);
+  if (!mapping.outcome && !mapping.amount) missingRequired.push("outcome");
+  if (!mapping.mode && !defaultMode) missingRequired.push("mode");
   const seenInFile = new Set();
   const classified = [];
   let ready = 0;
@@ -211,7 +277,7 @@ function classifyRows(rows, mapping, existingKeys) {
 
   rows.forEach((row, i) => {
     const rowNumber = i + 2; // header is row 1
-    const payload = rowToPayload(row, mapping);
+    const payload = rowToPayload(row, mapping, { defaultMode });
 
     if (missingRequired.length) {
       classified.push({
@@ -314,6 +380,9 @@ module.exports = {
   normalizeOutcome,
   normalizeMode,
   coerceTimestamp,
+  parseAmount,
+  inferOutcomeFromAmount,
+  inferModeFromFilename,
   identityKey,
   detectFileKind,
   parseWorkbook,

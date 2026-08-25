@@ -98,3 +98,33 @@ test("rejects unsupported and empty files", () => {
   assert.throws(() => parseWorkbook(Buffer.from("hi"), "notes.txt", "text/plain"), /Unsupported|empty/i);
   assert.throws(() => parseWorkbook(Buffer.from([]), "a.csv", "text/csv"), /empty/i);
 });
+
+test("Pocket Option-style export infers outcome from Profit and mode from filename", () => {
+  const csv = Buffer.from(
+    [
+      "ID,Opened,Asset,Action,Amount,Income,Profit",
+      "1,2026-08-10 07:12:00,EURUSD,call,10,18.5,8.5",
+      "2,2026-08-10 07:15:00,GBPUSD,put,10,0,-10",
+      "3,10.08.2026 08:00:00,BTCUSDT,call,5,5,0",
+    ].join("\n"),
+    "utf8"
+  );
+  const parsed = parseWorkbook(csv, "export_demo_history_107352634.csv", "text/csv");
+  const mapping = mapColumns(parsed.headers);
+  assert.equal(mapping.asset, "Asset");
+  assert.equal(mapping.direction, "Action");
+  assert.equal(mapping.amount, "Profit");
+  assert.equal(mapping.timestamp, "Opened");
+
+  const result = classifyRows(parsed.rows, mapping, new Set(), {
+    filename: "export_demo_history_107352634.csv",
+  });
+  assert.equal(result.counts.invalid, 0);
+  assert.equal(result.counts.ready, 3);
+  assert.equal(result.rows[0].sanitized.direction, "long");
+  assert.equal(result.rows[0].sanitized.outcome, "win");
+  assert.equal(result.rows[0].sanitized.mode, "demo");
+  assert.equal(result.rows[1].sanitized.direction, "short");
+  assert.equal(result.rows[1].sanitized.outcome, "loss");
+  assert.equal(result.rows[2].sanitized.outcome, "breakeven");
+});
