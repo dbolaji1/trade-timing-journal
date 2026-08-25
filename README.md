@@ -129,6 +129,8 @@ CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NU
 | `PATCH /api/trades/:id` | Partial update |
 | `DELETE /api/trades/:id` | Delete |
 | `GET /api/analytics` | Full dashboard analytics (see below) |
+| `POST /api/import/preview` | Upload CSV/Excel (`multipart` field `file`); returns mapping, new/duplicate/invalid counts, and a preview |
+| `POST /api/import/confirm` | `{ trades: [...] }` — inserts only validated new trades; skips duplicates |
 
 Validation rules (server-side, returns `400` with a `details` array):
 

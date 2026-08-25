@@ -10,7 +10,13 @@
     "backup": "node scripts/backup.js",
     "test": "node --test"
   },
-  "keywords": ["trading", "journal", "sqlite", "express", "analytics"],
+  "keywords": [
+    "trading",
+    "journal",
+    "sqlite",
+    "express",
+    "analytics"
+  ],
   "author": "",
   "license": "MIT",
   "engines": {
@@ -18,8 +24,10 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.4.1",
-    "express": "^4.19.2",
+    "chart.js": "^4.4.9",
     "cors": "^2.8.5",
-    "chart.js": "^4.4.9"
+    "express": "^4.19.2",
+    "multer": "^2.2.0",
+    "xlsx": "^0.18.5"
   }
 }

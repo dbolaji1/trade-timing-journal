@@ -430,6 +430,135 @@ async function refreshAll() {
   if (typeof window.__ttDataChanged === "function") window.__ttDataChanged();
 }
 
+/* ---------- CSV / Excel import ---------- */
+let pendingReadyTrades = [];
+
+function showImportErrors(list) {
+  const box = $("importErrors");
+  box.hidden = false;
+  box.innerHTML = "<ul>" + list.map((m) => "<li>" + escapeHtml(m) + "</li>").join("") + "</ul>";
+}
+
+function hideImportErrors() {
+  $("importErrors").hidden = true;
+  $("importErrors").innerHTML = "";
+}
+
+function resetImport() {
+  pendingReadyTrades = [];
+  $("importForm").reset();
+  $("importPreview").hidden = true;
+  $("importBody").innerHTML = "";
+  $("importCounts").innerHTML = "";
+  $("importMapping").textContent = "";
+  $("importTruncated").hidden = true;
+  hideImportErrors();
+  $("importConfirmBtn").disabled = false;
+}
+
+async function previewImport(event) {
+  event.preventDefault();
+  hideImportErrors();
+  const file = $("importFile").files[0];
+  if (!file) {
+    showImportErrors(["Choose a CSV or Excel file first."]);
+    return;
+  }
+  const fd = new FormData();
+  fd.append("file", file);
+  $("importPreviewBtn").disabled = true;
+  try {
+    const res = await fetch("/api/import/preview", { method: "POST", body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showImportErrors([data.error || "Could not read the file (HTTP " + res.status + ")."]);
+      $("importPreview").hidden = true;
+      return;
+    }
+    pendingReadyTrades = Array.isArray(data.readyTrades) ? data.readyTrades : [];
+    const c = data.counts || {};
+    $("importCounts").innerHTML =
+      '<span class="import-stat">' + (c.total || 0) + " rows</span>" +
+      '<span class="import-stat ready">' + (c.ready || 0) + " new</span>" +
+      '<span class="import-stat dup">' + (c.duplicates || 0) + " duplicates (skipped)</span>" +
+      '<span class="import-stat bad">' + (c.invalid || 0) + " invalid</span>";
+
+    const mapBits = Object.keys(data.mapping || {}).map((k) => k + " ← " + data.mapping[k]);
+    let mapText = data.filename + " · columns: " + (mapBits.join("; ") || "none mapped");
+    if (data.missingRequired && data.missingRequired.length) {
+      mapText += " · missing required: " + data.missingRequired.join(", ");
+    }
+    $("importMapping").textContent = mapText;
+
+    const body = $("importBody");
+    if (!data.rows || !data.rows.length) {
+      body.innerHTML = '<tr><td colspan="9" class="empty">No rows to show.</td></tr>';
+    } else {
+      body.innerHTML = data.rows.map((r) => {
+        const p = r.preview || {};
+        const reason = r.reason || p.notes || "—";
+        return (
+          "<tr>" +
+            '<td class="mono">' + r.rowNumber + "</td>" +
+            '<td><span class="chip chip-' + escapeHtml(r.status) + '">' + escapeHtml(r.status) + "</span></td>" +
+            "<td>" + escapeHtml(p.asset || (r.payload && r.payload.asset) || "—") + "</td>" +
+            "<td>" + escapeHtml(p.direction || "—") + "</td>" +
+            "<td>" + escapeHtml(p.outcome || "—") + "</td>" +
+            "<td>" + escapeHtml(p.pnl_formatted || "—") + "</td>" +
+            "<td>" + escapeHtml(p.mode || "—") + "</td>" +
+            '<td class="mono faint">' + escapeHtml(p.timestamp_utc || "—") + "</td>" +
+            '<td class="notes" title="' + escapeHtml(reason) + '">' + escapeHtml(reason) + "</td>" +
+          "</tr>"
+        );
+      }).join("");
+    }
+    $("importTruncated").hidden = !data.truncated;
+    $("importPreview").hidden = false;
+    $("importConfirmBtn").disabled = pendingReadyTrades.length === 0;
+    if (data.missingRequired && data.missingRequired.length) {
+      showImportErrors(["Required columns could not be mapped: " + data.missingRequired.join(", ") + ". Rename the headers or add those columns."]);
+    }
+  } catch (err) {
+    showImportErrors(["Network error — is the server running? (" + err.message + ")"]);
+  } finally {
+    $("importPreviewBtn").disabled = false;
+  }
+}
+
+async function confirmImport() {
+  if (!pendingReadyTrades.length) {
+    toast("Nothing new to import — duplicates and invalid rows are skipped.", "info");
+    return;
+  }
+  $("importConfirmBtn").disabled = true;
+  try {
+    const res = await fetch("/api/import/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trades: pendingReadyTrades }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showImportErrors([data.error || "Import failed (HTTP " + res.status + ")."]);
+      $("importConfirmBtn").disabled = false;
+      return;
+    }
+    toast(
+      "Imported " + data.imported + " trade" + (data.imported === 1 ? "" : "s") +
+      (data.skipped_duplicates ? " · skipped " + data.skipped_duplicates + " duplicate" + (data.skipped_duplicates === 1 ? "" : "s") : "") +
+      (data.failed ? " · " + data.failed + " failed" : "") +
+      " · saved to SQLite",
+      data.failed ? "error" : "ok"
+    );
+    pendingReadyTrades = [];
+    $("importConfirmBtn").disabled = true;
+    await refreshAll();
+  } catch (err) {
+    toast("Network error — is the server running? (" + err.message + ")", "error");
+    $("importConfirmBtn").disabled = false;
+  }
+}
+
 /* ---------- Wiring ---------- */
 document.addEventListener("DOMContentLoaded", () => {
   $("tradeForm").addEventListener("submit", submitTrade);

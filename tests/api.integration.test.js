@@ -207,6 +207,73 @@ test("GET /api/analytics returns honest, separated statistics", async () => {
   assert.equal(a.demo.bestHour.found, false);
 });
 
+test("CSV import preview + confirm persists like a manual trade", async () => {
+  const csv = [
+    "symbol,call/put,result,p&l,account,open time",
+    "eur/usd,call,win,25.50,live,2026-08-11T08:00:00Z",
+    "eur/usd,call,win,25.50,live,2026-08-11T08:00:00Z",
+    "gbp/usd,put,lost,not-a-number,demo,2026-08-11T09:00:00Z",
+  ].join("\n");
+  const form = new FormData();
+  form.append("file", new Blob([csv], { type: "text/csv" }), "sample.csv");
+  const preview = await fetch(base + "/api/import/preview", { method: "POST", body: form });
+  assert.equal(preview.status, 200);
+  const p = await preview.json();
+  assert.equal(p.counts.ready, 1);
+  assert.equal(p.counts.duplicates, 1);
+  assert.equal(p.counts.invalid, 1);
+  assert.equal(p.mapping.direction, "call/put");
+  assert.equal(p.readyTrades[0].direction, "long");
+  assert.equal(p.readyTrades[0].mode, "real");
+  assert.equal(p.readyTrades[0].timestamp_utc, "2026-08-11T08:00:00.000Z");
+
+  const confirm = await fetch(base + "/api/import/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ trades: p.readyTrades }),
+  });
+  const c = await confirm.json();
+  assert.equal(confirm.status, 200);
+  assert.equal(c.imported, 1);
+
+  const againForm = new FormData();
+  againForm.append("file", new Blob([csv], { type: "text/csv" }), "sample.csv");
+  const again = await (await fetch(base + "/api/import/preview", { method: "POST", body: againForm })).json();
+  assert.equal(again.counts.ready, 0, "re-upload must not create duplicates");
+  assert.ok(again.counts.duplicates >= 1);
+
+  const analytics = await (await fetch(base + "/api/analytics")).json();
+  assert.ok(analytics.real.summary.n >= 1);
+});
+
+test("Excel import and missing-file errors", async () => {
+  const XLSX = require("xlsx");
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([
+    ["asset", "direction", "outcome", "amount", "mode", "timestamp"],
+    ["SOLUSDT", "short", "breakeven", 0, "demo", "2026-08-12T10:00:00Z"],
+  ]);
+  XLSX.utils.book_append_sheet(wb, ws, "Trades");
+  const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+  const form = new FormData();
+  form.append("file", new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "t.xlsx");
+  const preview = await fetch(base + "/api/import/preview", { method: "POST", body: form });
+  assert.equal(preview.status, 200);
+  const p = await preview.json();
+  assert.equal(p.kind, "excel");
+  assert.equal(p.counts.ready, 1);
+
+  const confirm = await fetch(base + "/api/import/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ trades: p.readyTrades }),
+  });
+  assert.equal((await confirm.json()).imported, 1);
+
+  const empty = await fetch(base + "/api/import/preview", { method: "POST", body: new FormData() });
+  assert.equal(empty.status, 400);
+});
+
 test("GET / serves the app shell", async () => {
   const res = await fetch(base + "/");
   assert.equal(res.status, 200);

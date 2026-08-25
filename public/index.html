@@ -101,6 +101,52 @@
       </form>
     </section>
 
+    <!-- ================= CSV / Excel import ================= -->
+    <section class="card" id="importCard" aria-label="Import trades from a spreadsheet">
+      <h2>Import trades</h2>
+      <p class="hint">Upload a CSV or Excel file. You will preview new, duplicate, and invalid rows before anything is saved.</p>
+
+      <form id="importForm">
+        <div class="field">
+          <label for="importFile">Spreadsheet (.csv, .xlsx, .xls)</label>
+          <input id="importFile" name="file" type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn primary" id="importPreviewBtn">Preview import</button>
+          <button type="button" class="btn ghost" id="importResetBtn">Clear</button>
+        </div>
+      </form>
+
+      <div id="importErrors" class="form-errors" role="alert" hidden></div>
+
+      <div id="importPreview" hidden>
+        <div class="import-counts" id="importCounts"></div>
+        <p class="micro" id="importMapping"></p>
+        <div class="tablewrap import-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Row</th>
+                <th>Status</th>
+                <th>Asset</th>
+                <th>Dir</th>
+                <th>Outcome</th>
+                <th>P&amp;L</th>
+                <th>Mode</th>
+                <th>When (UTC)</th>
+                <th>Notes / reason</th>
+              </tr>
+            </thead>
+            <tbody id="importBody"></tbody>
+          </table>
+        </div>
+        <p class="micro" id="importTruncated" hidden>Showing the first 200 rows of the file.</p>
+        <div class="form-actions">
+          <button type="button" class="btn primary" id="importConfirmBtn">Import new trades</button>
+        </div>
+      </div>
+    </section>
+
     <!-- ================= Trade log ================= -->
     <section class="card" id="logCard" aria-label="Trade log">
       <div class="card-head">

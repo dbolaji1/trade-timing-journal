@@ -9,17 +9,31 @@
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
+const multer = require("multer");
 const CONFIG = require("./config");
 const { getDb } = require("./db");
 const { validateTrade, formatCents, derivePnlSign } = require("./validation");
 const { computeAnalytics } = require("./analytics");
+const {
+  parseWorkbook,
+  mapColumns,
+  classifyRows,
+  existingIdentitySet,
+  identityKey,
+  MAX_FILE_BYTES,
+} = require("./import");
 
 const app = express();
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "public")));
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_BYTES, files: 1 },
+});
 
 // Helper: format DB row for API response (convert cents -> display, keep cents too)
 function formatTradeRow(row) {
@@ -247,6 +261,114 @@ app.delete("/api/trades/:id", (req, res) => {
     return res.status(404).json({ error: "Trade not found." });
   }
   res.json({ success: true, deleted_id: id });
+});
+
+// --- Import (CSV / Excel) ---
+app.post("/api/import/preview", (req, res) => {
+  upload.single("file")(req, res, (err) => {
+    if (err && err.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({ error: "File is too large (max 8 MB)." });
+    }
+    if (err) {
+      return res.status(400).json({ error: err.message || "Could not upload the file." });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: "Choose a CSV or Excel file to upload." });
+    }
+    try {
+      const { kind, headers, rows } = parseWorkbook(req.file.buffer, req.file.originalname, req.file.mimetype);
+      const mapping = mapColumns(headers);
+      const db = getDb();
+      const existing = existingIdentitySet(db);
+      const classified = classifyRows(rows, mapping, existing);
+
+      const previewRows = classified.rows.slice(0, 200).map((r) => ({
+        rowNumber: r.rowNumber,
+        status: r.status,
+        reason: r.reason,
+        preview: r.preview || null,
+        payload: r.status === "invalid" ? r.payload : undefined,
+      }));
+
+      res.json({
+        filename: req.file.originalname,
+        kind,
+        headers,
+        mapping,
+        missingRequired: classified.missingRequired,
+        counts: classified.counts,
+        rows: previewRows,
+        truncated: classified.rows.length > 200,
+        readyTrades: classified.rows.filter((r) => r.status === "ready").map((r) => r.sanitized),
+      });
+    } catch (e) {
+      const status = e.code === "UNSUPPORTED" ? 415 : 400;
+      res.status(status).json({ error: e.message });
+    }
+  });
+});
+
+app.post("/api/import/confirm", (req, res) => {
+  const trades = req.body && Array.isArray(req.body.trades) ? req.body.trades : null;
+  if (!trades) {
+    return res.status(400).json({ error: "Send { trades: [...] } with the previewed ready rows." });
+  }
+  if (trades.length > 10000) {
+    return res.status(400).json({ error: "Too many trades in one import." });
+  }
+
+  const db = getDb();
+  const existing = existingIdentitySet(db);
+  const seen = new Set();
+  const imported = [];
+  const skipped = [];
+  const failed = [];
+
+  const insert = db.prepare(`
+    INSERT INTO trades (asset, direction, outcome, pnl_cents, mode, notes, timestamp_utc)
+    VALUES (@asset, @direction, @outcome, @pnl_cents, @mode, @notes, @timestamp_utc)
+  `);
+
+  const run = db.transaction((list) => {
+    list.forEach((raw, i) => {
+      const { valid, errors, sanitized } = validateTrade(raw, { partial: false });
+      if (!valid) {
+        failed.push({ index: i, errors });
+        return;
+      }
+      const key = identityKey(sanitized);
+      if (existing.has(key) || seen.has(key)) {
+        skipped.push({ index: i, reason: "duplicate" });
+        return;
+      }
+      seen.add(key);
+      const info = insert.run({
+        asset: sanitized.asset,
+        direction: sanitized.direction,
+        outcome: sanitized.outcome,
+        pnl_cents: sanitized.pnl_cents,
+        mode: sanitized.mode,
+        notes: sanitized.notes,
+        timestamp_utc: sanitized.timestamp_utc,
+      });
+      imported.push(info.lastInsertRowid);
+      existing.add(key);
+    });
+  });
+
+  try {
+    run(trades);
+    res.json({
+      imported: imported.length,
+      skipped_duplicates: skipped.length,
+      failed: failed.length,
+      failed_details: failed.slice(0, 50),
+      imported_ids: imported,
+    });
+  } catch (err) {
+    console.error("[POST /api/import/confirm] DB error:", err);
+    res.status(500).json({ error: "Database error while importing trades." });
+  }
 });
 
 // Analytics: computed server-side from SQLite on every request.
