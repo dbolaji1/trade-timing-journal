@@ -11,7 +11,7 @@ const cors = require("cors");
 const path = require("path");
 const multer = require("multer");
 const CONFIG = require("./config");
-const { getDb } = require("./db");
+const { getDb, compactTradeIds } = require("./db");
 const { validateTrade, formatCents, derivePnlSign } = require("./validation");
 const { computeAnalytics } = require("./analytics");
 const {
@@ -275,6 +275,7 @@ app.post("/api/trades/bulk-delete", (req, res) => {
   });
   try {
     const deleted = run(unique);
+    compactTradeIds(db);
     res.json({ success: true, deleted, requested: unique.length });
   } catch (err) {
     console.error("[POST /api/trades/bulk-delete] DB error:", err);

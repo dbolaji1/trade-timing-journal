@@ -55,6 +55,7 @@ function getDb() {
   `);
 
   runMigrations(db);
+  compactTradeIds(db);
 
   return db;
 }
@@ -126,6 +127,36 @@ function runMigrations(database) {
   console.log(`[DB] Migrations complete. New version: ${pending[pending.length - 1].version}`);
 }
 
+/**
+ * Keep trade numbers as 1..N with no gaps, and reset AUTOINCREMENT so the
+ * next insert is N+1 (or 1 if the journal is empty).
+ */
+function compactTradeIds(database) {
+  const stats = database.prepare("SELECT COUNT(*) AS c, COALESCE(MAX(id), 0) AS m FROM trades").get();
+  if (stats.c === 0) {
+    database.exec("DELETE FROM sqlite_sequence WHERE name = 'trades'");
+    return { compacted: false, count: 0 };
+  }
+  if (stats.m === stats.c) {
+    database.exec("DELETE FROM sqlite_sequence WHERE name = 'trades'");
+    database.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES ('trades', ?)").run(stats.c);
+    return { compacted: false, count: stats.c };
+  }
+
+  const ids = database.prepare("SELECT id FROM trades ORDER BY id ASC").all().map((r) => r.id);
+  const bump = database.prepare("UPDATE trades SET id = ? WHERE id = ?");
+  const run = database.transaction(() => {
+    const offset = stats.m + 1000000;
+    for (const id of ids) bump.run(id + offset, id);
+    ids.forEach((id, i) => bump.run(i + 1, id + offset));
+    database.exec("DELETE FROM sqlite_sequence WHERE name = 'trades'");
+    database.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES ('trades', ?)").run(ids.length);
+  });
+  run();
+  console.log(`[DB] Renumbered trades 1–${ids.length} (was max id ${stats.m}).`);
+  return { compacted: true, count: ids.length };
+}
+
 function closeDb() {
   if (db) {
     db.close();
@@ -134,4 +165,4 @@ function closeDb() {
   }
 }
 
-module.exports = { getDb, closeDb, ensureDataDir };
+module.exports = { getDb, closeDb, ensureDataDir, compactTradeIds };
