@@ -21,7 +21,8 @@ const state = {
   filter: "all",       // "all" | "real" | "demo"
   editingId: null,     // trade id being edited, or null for new trade
   timezone: "Africa/Lagos", // filled from /api/health (fixed in config.js)
-  pendingDeleteId: null,    // id waiting in the delete confirmation modal
+  pendingDeleteIds: null,   // ids waiting in the delete confirmation modal
+  selectedIds: new Set(),
 };
 
 /* ---------- Small DOM helpers ---------- */
@@ -137,20 +138,23 @@ async function loadHealth() {
 /* ---------- Trade log ---------- */
 async function loadTrades() {
   const tbody = $("tradesBody");
-  tbody.innerHTML = '<tr><td colspan="10" class="empty">Loading trades from SQLite…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="11" class="empty">Loading trades from SQLite…</td></tr>';
   try {
     const res = await fetch("/api/trades?mode=" + state.filter);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      tbody.innerHTML = '<tr><td colspan="10" class="empty">' +
+      tbody.innerHTML = '<tr><td colspan="11" class="empty">' +
         "Could not load trades: " + escapeHtml(data.error || "HTTP " + res.status) + "</td></tr>";
       return;
     }
     state.trades = Array.isArray(data) ? data : [];
+    const visible = new Set(state.trades.map((t) => t.id));
+    state.selectedIds = new Set([...state.selectedIds].filter((id) => visible.has(id)));
     renderTrades();
     renderSummary();
+    updateBulkUi();
   } catch (err) {
-    tbody.innerHTML = '<tr><td colspan="10" class="empty">' +
+    tbody.innerHTML = '<tr><td colspan="11" class="empty">' +
       "Network error — is the server running? (" + escapeHtml(err.message) + ")</td></tr>";
   }
 }
@@ -162,8 +166,10 @@ function rowHtml(t) {
   const notesCell = t.notes
     ? escapeHtml(t.notes)
     : '<span class="faint">—</span>';
+  const checked = state.selectedIds.has(t.id) ? " checked" : "";
   return (
     '<tr data-id="' + t.id + '">' +
+      '<td class="check-col"><input type="checkbox" data-select="' + t.id + '"' + checked + " /></td>" +
       '<td class="mono">#' + t.id + "</td>" +
       '<td class="nowrap">' + escapeHtml(fmtTz(t.timestamp_utc)) + "</td>" +
       '<td class="mono faint nowrap">' + escapeHtml(fmtUtc(t.timestamp_utc)) + "</td>" +
@@ -189,11 +195,28 @@ function renderTrades() {
       real: "No real trades here. Real and demo are always kept separate — try the Both or Demo filter.",
       demo: "No demo trades here. Real and demo are always kept separate — try the Both or Real filter.",
     };
-    tbody.innerHTML = '<tr><td colspan="10" class="empty">' + messages[state.filter] + "</td></tr>";
+    tbody.innerHTML = '<tr><td colspan="11" class="empty">' + messages[state.filter] + "</td></tr>";
     $("logSummary").textContent = "";
+    updateBulkUi();
     return;
   }
   tbody.innerHTML = state.trades.map(rowHtml).join("");
+  updateBulkUi();
+}
+
+function updateBulkUi() {
+  const n = state.selectedIds.size;
+  const btn = $("bulkDeleteBtn");
+  if (btn) {
+    btn.disabled = n === 0;
+    btn.textContent = n ? "Delete selected (" + n + ")" : "Delete selected";
+  }
+  const all = $("selectAllTrades");
+  if (all) {
+    const total = state.trades.length;
+    all.checked = total > 0 && n === total;
+    all.indeterminate = n > 0 && n < total;
+  }
 }
 
 // Summary of the currently shown trades. Real and demo P&L are NEVER mixed.
@@ -615,6 +638,24 @@ document.addEventListener("DOMContentLoaded", () => {
     const delBtn = event.target.closest("[data-del]");
     if (delBtn) askDelete(Number(delBtn.dataset.del));
   });
+  $("tradesBody").addEventListener("change", (event) => {
+    const box = event.target.closest("[data-select]");
+    if (!box) return;
+    const id = Number(box.dataset.select);
+    if (box.checked) state.selectedIds.add(id);
+    else state.selectedIds.delete(id);
+    updateBulkUi();
+  });
+  const selectAll = $("selectAllTrades");
+  if (selectAll) {
+    selectAll.addEventListener("change", () => {
+      if (selectAll.checked) state.trades.forEach((t) => state.selectedIds.add(t.id));
+      else state.selectedIds.clear();
+      renderTrades();
+    });
+  }
+  const bulkBtn = $("bulkDeleteBtn");
+  if (bulkBtn) bulkBtn.addEventListener("click", askBulkDelete);
 
   // Delete modal.
   $("deleteCancel").addEventListener("click", closeDeleteModal);

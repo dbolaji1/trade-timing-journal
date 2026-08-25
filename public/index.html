@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content="Trade Timing Journal — a persistent personal trading journal backed by SQLite." />
   <title>Trade Timing Journal</title>
-  <link rel="stylesheet" href="styles.css?v=import3" />
+  <link rel="stylesheet" href="styles.css?v=import5" />
 </head>
 <body>
 
@@ -111,6 +111,7 @@
           <button class="pill" data-mode="demo" aria-pressed="false">Demo only</button>
         </div>
         <button class="btn ghost small" id="reloadBtn" title="Re-read the log from SQLite">↻ Reload from DB</button>
+        <button type="button" class="btn danger small" id="bulkDeleteBtn" disabled>Delete selected</button>
       </div>
 
       <p class="summary" id="logSummary">Loading…</p>
@@ -127,6 +128,7 @@
         <table id="tradesTable">
           <thead>
             <tr>
+              <th class="check-col"><input type="checkbox" id="selectAllTrades" title="Select all shown trades" /></th>
               <th>#</th>
               <th>When (<span id="tzTh">…</span>)</th>
               <th>UTC</th>
@@ -140,7 +142,7 @@
             </tr>
           </thead>
           <tbody id="tradesBody">
-            <tr><td colspan="10" class="empty">Loading trades from SQLite…</td></tr>
+            <tr><td colspan="11" class="empty">Loading trades from SQLite…</td></tr>
           </tbody>
         </table>
       </div>
@@ -313,7 +315,7 @@
   <div class="toasts" id="toasts" aria-live="polite"></div>
 
   <script src="vendor/chart.umd.js"></script>
-  <script src="app.js?v=import4"></script>
-  <script src="dashboard.js?v=import4"></script>
+  <script src="app.js?v=import5"></script>
+  <script src="dashboard.js?v=import5"></script>
 </body>
 </html>

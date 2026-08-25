@@ -333,7 +333,8 @@ tr.row-editing td:first-child {
   font-size: 0.9rem;
 }
 
-.actions-col { width: 1%; }
+.check-col { width: 1%; }
+#tradesTable input[type="checkbox"] { accent-color: var(--accent); width: auto; cursor: pointer; }
 
 .actions { display: flex; gap: 0.35rem; }
 

@@ -248,6 +248,40 @@ app.patch("/api/trades/:id", (req, res) => {
   }
 });
 
+// Bulk delete
+app.post("/api/trades/bulk-delete", (req, res) => {
+  const ids = req.body && Array.isArray(req.body.ids) ? req.body.ids : null;
+  if (!ids || ids.length === 0) {
+    return res.status(400).json({ error: "Send { ids: [1, 2, ...] }." });
+  }
+  const clean = [];
+  for (const raw of ids) {
+    const id = Number(raw);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: "Each id must be a positive integer." });
+    }
+    clean.push(id);
+  }
+  const unique = [...new Set(clean)];
+  if (unique.length > 20000) {
+    return res.status(400).json({ error: "Too many ids in one request." });
+  }
+  const db = getDb();
+  const del = db.prepare("DELETE FROM trades WHERE id = ?");
+  const run = db.transaction((list) => {
+    let n = 0;
+    for (const id of list) n += del.run(id).changes;
+    return n;
+  });
+  try {
+    const deleted = run(unique);
+    res.json({ success: true, deleted, requested: unique.length });
+  } catch (err) {
+    console.error("[POST /api/trades/bulk-delete] DB error:", err);
+    res.status(500).json({ error: "Database error while deleting trades." });
+  }
+});
+
 // Delete trade
 app.delete("/api/trades/:id", (req, res) => {
   const db = getDb();
