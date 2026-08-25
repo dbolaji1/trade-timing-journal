@@ -395,7 +395,9 @@ function resetForm() {
 function askDelete(id) {
   const t = state.trades.find((x) => x.id === id);
   if (!t) return;
-  state.pendingDeleteId = id;
+  state.pendingDeleteIds = [id];
+  const title = $("deleteTitle");
+  if (title) title.textContent = "Delete this trade?";
   const msg = $("deleteMessage");
   msg.textContent = "";
   msg.appendChild(document.createTextNode("Trade #" + id + " — " + t.asset + " " + t.direction + " " + t.outcome + " (" + t.mode + "), P&L "));
@@ -407,23 +409,48 @@ function askDelete(id) {
   $("deleteConfirm").focus();
 }
 
+function askBulkDelete() {
+  const ids = [...state.selectedIds];
+  if (!ids.length) {
+    toast("Select at least one trade first (or use the checkbox in the header to select all).", "info");
+    return;
+  }
+  state.pendingDeleteIds = ids;
+  const title = $("deleteTitle");
+  if (title) title.textContent = "Delete " + ids.length + " trade" + (ids.length === 1 ? "" : "s") + "?";
+  $("deleteMessage").textContent =
+    "You are about to permanently remove " + ids.length +
+    " selected trade" + (ids.length === 1 ? "" : "s") +
+    " from SQLite. This cannot be undone.";
+  $("deleteModal").hidden = false;
+  $("deleteConfirm").focus();
+}
+
 function closeDeleteModal() {
   $("deleteModal").hidden = true;
-  state.pendingDeleteId = null;
+  state.pendingDeleteIds = null;
 }
 
 async function confirmDelete() {
-  const id = state.pendingDeleteId;
-  if (id === null) return;
+  const ids = state.pendingDeleteIds;
+  if (!ids || !ids.length) return;
   $("deleteConfirm").disabled = true;
   try {
-    const res = await fetch("/api/trades/" + id, { method: "DELETE" });
+    const res = ids.length === 1
+      ? await fetch("/api/trades/" + ids[0], { method: "DELETE" })
+      : await fetch("/api/trades/bulk-delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: ids }),
+        });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       toast("Delete failed: " + (data.error || "HTTP " + res.status), "error");
     } else {
-      toast("Deleted trade #" + id + " from SQLite", "ok");
-      if (state.editingId === id) resetForm();
+      const n = ids.length === 1 ? 1 : (data.deleted || ids.length);
+      toast("Deleted " + n + " trade" + (n === 1 ? "" : "s") + " from SQLite", "ok");
+      if (ids.includes(state.editingId)) resetForm();
+      state.selectedIds = new Set();
       await refreshAll();
     }
   } catch (err) {
