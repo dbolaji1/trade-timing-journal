@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content="Trade Timing Journal — a persistent personal trading journal backed by SQLite." />
   <title>Trade Timing Journal</title>
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=import3" />
 </head>
 <body>
 
@@ -264,6 +264,38 @@
     </p>
   </footer>
 
+  <!-- ================= Import preview modal ================= -->
+  <div class="modal-backdrop" id="importModal" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="importTitle">
+      <h3 id="importTitle">Import preview</h3>
+      <p class="hint" id="importMapping"></p>
+      <div class="import-counts" id="importCounts"></div>
+      <div class="tablewrap import-table">
+        <table>
+          <thead>
+            <tr>
+              <th>Row</th>
+              <th>Status</th>
+              <th>Asset</th>
+              <th>Dir</th>
+              <th>Outcome</th>
+              <th>P&amp;L</th>
+              <th>Mode</th>
+              <th>When (UTC)</th>
+              <th>Notes / reason</th>
+            </tr>
+          </thead>
+          <tbody id="importBody"></tbody>
+        </table>
+      </div>
+      <p class="micro" id="importTruncated" hidden>Showing the first 200 rows of the file.</p>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" id="importCancelBtn">Close</button>
+        <button type="button" class="btn primary" id="importConfirmBtn">Import new trades</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ================= Delete confirmation modal ================= -->
   <div class="modal-backdrop" id="deleteModal" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="deleteTitle">
@@ -281,7 +313,7 @@
   <div class="toasts" id="toasts" aria-live="polite"></div>
 
   <script src="vendor/chart.umd.js"></script>
-  <script src="app.js"></script>
-  <script src="dashboard.js"></script>
+  <script src="app.js?v=import3"></script>
+  <script src="dashboard.js?v=import3"></script>
 </body>
 </html>

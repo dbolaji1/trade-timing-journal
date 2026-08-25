@@ -467,8 +467,10 @@ async function previewImport(event) {
   const file = $("importFile").files[0];
   if (!file) {
     showImportErrors(["Choose a CSV or Excel file first."]);
+    toast("Choose a CSV or Excel file first.", "error");
     return;
   }
+  toast("Reading " + file.name + "…", "info");
   const fd = new FormData();
   fd.append("file", file);
   $("importPreviewBtn").disabled = true;
@@ -476,8 +478,14 @@ async function previewImport(event) {
     const res = await fetch("/api/import/preview", { method: "POST", body: fd });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
+<<<<<<< HEAD
       showImportErrors([data.error || "Could not read the file (HTTP " + res.status + ")."]);
       $("importPreview").hidden = true;
+=======
+      const msg = data.error || "Could not read the file (HTTP " + res.status + ").";
+      showImportErrors([msg]);
+      toast(msg, "error");
+>>>>>>> 04caa6a (Restore import preview modal and attach Preview/Import click handlers)
       return;
     }
     pendingReadyTrades = Array.isArray(data.readyTrades) ? data.readyTrades : [];
@@ -520,6 +528,7 @@ async function previewImport(event) {
     $("importTruncated").hidden = !data.truncated;
     $("importConfirmBtn").disabled = pendingReadyTrades.length === 0;
     $("importModal").hidden = false;
+    toast("Preview ready — review the rows, then click Import new trades.", "ok");
     if (data.missingRequired && data.missingRequired.length) {
       showImportErrors(["Required columns could not be mapped: " + data.missingRequired.join(", ") + ". Rename the headers or add those columns."]);
     }
@@ -573,7 +582,29 @@ document.addEventListener("DOMContentLoaded", () => {
   $("cancelEditBtn").addEventListener("click", resetForm);
   $("reloadBtn").addEventListener("click", refreshAll);
 
-  document.querySelectorAll(".pill").forEach((btn) => {
+  const previewBtn = $("importPreviewBtn");
+  if (previewBtn) previewBtn.addEventListener("click", previewImport);
+  const confirmBtn = $("importConfirmBtn");
+  if (confirmBtn) confirmBtn.addEventListener("click", confirmImport);
+  const cancelBtn = $("importCancelBtn");
+  if (cancelBtn) cancelBtn.addEventListener("click", closeImportModal);
+  const fileInput = $("importFile");
+  if (fileInput) {
+    fileInput.addEventListener("change", () => {
+      const f = fileInput.files[0];
+      const nameEl = $("importFileName");
+      if (nameEl) nameEl.textContent = f ? f.name : "";
+      hideImportErrors();
+    });
+  }
+  const importModal = $("importModal");
+  if (importModal) {
+    importModal.addEventListener("click", (event) => {
+      if (event.target === importModal) closeImportModal();
+    });
+  }
+
+  document.querySelectorAll("#logCard .pill").forEach((btn) => {
     btn.addEventListener("click", () => setFilter(btn.dataset.mode));
   });
 
@@ -597,7 +628,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (event.target === $("deleteModal")) closeDeleteModal();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeDeleteModal();
+    if (event.key === "Escape") {
+      closeDeleteModal();
+      closeImportModal();
+    }
   });
 
   // Initial load.
