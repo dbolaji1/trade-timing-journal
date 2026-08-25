@@ -478,14 +478,9 @@ async function previewImport(event) {
     const res = await fetch("/api/import/preview", { method: "POST", body: fd });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-<<<<<<< HEAD
-      showImportErrors([data.error || "Could not read the file (HTTP " + res.status + ")."]);
-      $("importPreview").hidden = true;
-=======
       const msg = data.error || "Could not read the file (HTTP " + res.status + ").";
       showImportErrors([msg]);
       toast(msg, "error");
->>>>>>> 04caa6a (Restore import preview modal and attach Preview/Import click handlers)
       return;
     }
     pendingReadyTrades = Array.isArray(data.readyTrades) ? data.readyTrades : [];
