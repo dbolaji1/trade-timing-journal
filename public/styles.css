@@ -366,6 +366,33 @@ tr.row-editing td:first-child {
 
 /* ---------- Import ---------- */
 
+.import-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0 0 0.85rem;
+  padding: 0.65rem 0.75rem;
+  background: var(--bg);
+  border: 1px dashed var(--card-edge);
+  border-radius: 8px;
+}
+.import-label {
+  margin: 0;
+  white-space: nowrap;
+}
+.import-bar input[type="file"] {
+  flex: 1;
+  min-width: 180px;
+  width: auto;
+}
+.modal-wide {
+  width: min(960px, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+}
+.modal-wide h3 { color: var(--accent); }
+
 .import-counts {
   display: flex;
   flex-wrap: wrap;

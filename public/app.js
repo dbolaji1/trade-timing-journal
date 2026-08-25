@@ -214,7 +214,7 @@ function renderSummary() {
 
 function setFilter(mode) {
   state.filter = mode;
-  document.querySelectorAll(".pill").forEach((btn) => {
+  document.querySelectorAll("#logCard .pill").forEach((btn) => {
     const active = btn.dataset.mode === mode;
     btn.classList.toggle("active", active);
     btn.setAttribute("aria-pressed", String(active));
@@ -444,20 +444,25 @@ function hideImportErrors() {
   $("importErrors").innerHTML = "";
 }
 
+function closeImportModal() {
+  $("importModal").hidden = true;
+}
+
 function resetImport() {
   pendingReadyTrades = [];
-  $("importForm").reset();
-  $("importPreview").hidden = true;
+  $("importFile").value = "";
+  $("importFileName").textContent = "";
   $("importBody").innerHTML = "";
   $("importCounts").innerHTML = "";
   $("importMapping").textContent = "";
   $("importTruncated").hidden = true;
   hideImportErrors();
+  closeImportModal();
   $("importConfirmBtn").disabled = false;
 }
 
 async function previewImport(event) {
-  event.preventDefault();
+  if (event) event.preventDefault();
   hideImportErrors();
   const file = $("importFile").files[0];
   if (!file) {
@@ -513,8 +518,8 @@ async function previewImport(event) {
       }).join("");
     }
     $("importTruncated").hidden = !data.truncated;
-    $("importPreview").hidden = false;
     $("importConfirmBtn").disabled = pendingReadyTrades.length === 0;
+    $("importModal").hidden = false;
     if (data.missingRequired && data.missingRequired.length) {
       showImportErrors(["Required columns could not be mapped: " + data.missingRequired.join(", ") + ". Rename the headers or add those columns."]);
     }
@@ -552,6 +557,7 @@ async function confirmImport() {
     );
     pendingReadyTrades = [];
     $("importConfirmBtn").disabled = true;
+    closeImportModal();
     await refreshAll();
   } catch (err) {
     toast("Network error — is the server running? (" + err.message + ")", "error");
