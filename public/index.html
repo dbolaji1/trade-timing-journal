@@ -284,13 +284,14 @@
         <h2>How to read these numbers</h2>
         <ul>
           <li>All statistics are computed from the trades in <strong>SQLite</strong>, on the server, every time you load or reload this dashboard. Nothing here is hard-coded.</li>
+          <li><strong>The headline is focused on today.</strong> The "Today" card shows how the current day is going, and the "Best time to trade" comes from your trades on <strong>this weekday</strong> (e.g. all your Mondays) — so it answers "when should I trade today?" instead of pointing at a different best day each week.</li>
           <li><strong>Real and demo are always separate.</strong> They are never blended into one series, and each mode is compared against its own baseline.</li>
           <li><strong>Win rate = wins ÷ ALL trades of that mode</strong> (breakevens count in the bottom of the fraction, so they pull the win rate down).</li>
           <li>A bucket needs at least <strong>3 trades</strong> before any statistics are shown — otherwise you see "Not enough data yet", never a blank space.</li>
           <li>Win rates come with a <strong>95% Wilson confidence interval</strong> — a range the true win rate is likely to sit in. Wide intervals mean few trades; treat those numbers with caution.</li>
           <li><strong>Expectancy (average P&amp;L)</strong> is shown next to win rate: a high win rate does not automatically mean profitable. When you log stakes, <strong>ROI %</strong> (total P&amp;L ÷ total stake) is also shown, which removes position-size history from the comparison.</li>
-          <li><strong>Strongest observed window</strong> is deliberately strict, because ~31 buckets are tested at once and some will look good by chance alone. A window only qualifies with <strong>at least 30 trades</strong> of that mode, a win rate more than 5 percentage points above that mode's baseline, <em>and</em> a 95% confidence lower bound above that baseline. It is ranked by the lower bound — never by raw win rate.</li>
-          <li>Samples under 30 trades are always flagged as small samples.</li>
+          <li><strong>"Best time today" is honest, not a promise.</strong> It requires at least <strong>5 trades on this weekday</strong>, a win rate more than 5 percentage points above that weekday's baseline, <em>and</em> a 95% confidence lower bound above that baseline. The card always states how many trades the hint is based on, and marks small samples.</li>
+          <li>Sample sizes under 30 trades are always flagged as provisional.</li>
           <li>Timestamps are stored in UTC and bucketed in the fixed configured timezone (shown in the header); manual entry is interpreted in that same timezone.</li>
         </ul>
       </div>

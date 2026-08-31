@@ -724,3 +724,33 @@ footer {
   cursor: pointer;
 }
 #mappingConfirm h4 { margin: 0.2rem 0 0.3rem; font-size: 0.9rem; }
+
+/* ---------- Today-focused dashboard + sticky entry form ---------- */
+
+/* The trade-entry form stays pinned while the trade log scrolls, so the
+   Save button is always reachable without scrolling the whole page. */
+@media (min-width: 901px) {
+  #entryCard {
+    position: sticky;
+    top: 1rem;
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+  }
+}
+
+.today-row td {
+  background: rgba(56, 189, 248, 0.10);
+}
+.chip-today {
+  background: var(--accent);
+  color: #0b1120;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-left: 0.35rem;
+}
+.today-card h3 {
+  color: var(--accent);
+}

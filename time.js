@@ -96,4 +96,66 @@ function startOfDayUtc(dateStr, tz = CONFIG.TIMEZONE, offsetDays = 0) {
   );
 }
 
-module.exports = { isValidTimezone, wallClockToUtcIso, parseTimestampToUtc, startOfDayUtc };
+/**
+ * Figure out "today" in the configured trading timezone.
+ *
+ * Returns:
+ *   date        "YYYY-MM-DD" (the calendar day in `tz`)
+ *   weekday     short label ("Mon" ... "Sun")
+ *   weekdayFull long label ("Monday" ... "Sunday")
+ *   startIso    UTC instant of 00:00:00 of that day in `tz`
+ *   endIso      UTC instant of 00:00:00 of the NEXT day in `tz` (exclusive end)
+ *
+ * Pass `dateStr` ("YYYY-MM-DD") for deterministic tests; otherwise the real
+ * current date in `tz` is used (never the server's or browser's clock).
+ */
+function todayInfo(timezone = CONFIG.TIMEZONE, dateStr = null) {
+  let year, month, day;
+  if (dateStr) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr));
+    if (!m) throw new Error("Invalid date: " + dateStr);
+    year = +m[1];
+    month = +m[2];
+    day = +m[3];
+  } else {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+    const get = (t) => Number((parts.find((p) => p.type === t) || {}).value);
+    year = get("year");
+    month = get("month");
+    day = get("day");
+  }
+
+  const pad = (n) => String(n).padStart(2, "0");
+  const date = `${year}-${pad(month)}-${pad(day)}`;
+
+  // Weekday label: probe mid-day wall clock so we never straddle a boundary.
+  const probe = new Date(wallClockToUtcIso(year, month, day, 12, 0, 0, timezone));
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    weekday: "short",
+  }).formatToParts(probe);
+  const weekday = (parts.find((p) => p.type === "weekday") || {}).value;
+
+  const startIso = wallClockToUtcIso(year, month, day, 0, 0, 0, timezone);
+  const next = new Date(Date.UTC(year, month - 1, day + 1));
+  const endIso = wallClockToUtcIso(
+    next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(),
+    0, 0, 0, timezone
+  );
+
+  const FULL = { Mon: "Monday", Tue: "Tuesday", Wed: "Wednesday", Thu: "Thursday", Fri: "Friday", Sat: "Saturday", Sun: "Sunday" };
+  return {
+    date,
+    weekday,
+    weekdayFull: FULL[weekday] || weekday,
+    startIso,
+    endIso,
+  };
+}
+
+module.exports = { isValidTimezone, wallClockToUtcIso, parseTimestampToUtc, startOfDayUtc, todayInfo };

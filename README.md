@@ -165,7 +165,8 @@ The `real` and `demo` blocks each contain:
 
 - `summary` — n, wins, win rate, Wilson 95% CI, total P&L, expectancy (cents), total stake, ROI %, small-sample flag
 - `hourly` — 24 buckets; `weekday` — 7 buckets. Each bucket: `n`, `wins`, `winRate`, `ciLower`, `ciUpper`, `expectancyCents`, `totalStakeCents`, `roiPct`, `eligible` (n ≥ 3)
-- `bestHour` / `bestWeekday` — `{ found, window | baselineWinRate, marginPct }`; `found` requires ≥30 trades, >5pts over baseline, and CI lower bound above baseline
+- `bestHour` / `bestWeekday` — historical strongest windows: `{ found, window | baselineWinRate, marginPct }`; `found` requires ≥30 trades, >5pts over baseline, and CI lower bound above baseline
+- `today` — the dashboard headline: `{ date, weekday, weekdayFull, weekdayKey, startIso, endIso, summary, baseline, bestHour }`. `summary` = stats for the current calendar day; `bestHour` = strongest hour on today's weekday (≥5 weekday trades, >5pts over the weekday baseline, CI lower bound above it), clearly labelled with its sample size
 
 ---
 
@@ -179,6 +180,7 @@ All statistics live in `analytics.js` as pure, tested functions:
 4. **Expectancy & ROI** — expectancy = average P&L in integer cents; ROI % = total P&L ÷ total stake (when stakes exist). Rounding happens only for display.
 5. **Minimum sample size** — a bucket needs ≥3 trades to show statistics; below that the UI says **"Not enough data yet"**.
 6. **Strongest observed window** — for **each mode separately**, a bucket qualifies only with **≥30 trades**, win rate **>5 points above that mode's baseline**, **and** the Wilson lower bound above the baseline. The winner has the highest Wilson lower bound (tie-break: more trades, then higher win rate). If nothing qualifies, the dashboard says so explicitly.
+7. **Today focus** — the headline always revolves around today: a summary of today's trades, plus the strongest hour **on today's weekday** (e.g. Monday) using a lower bar (≥5 weekday trades, margin + confidence rules still applied) because per-weekday data is naturally smaller. The UI states how many trades each hint is based on.
 7. **Small samples** — anything under 30 trades is labelled as provisional.
 
 Thresholds are configurable in `config.js` (`ANALYTICS` block).
@@ -242,12 +244,12 @@ Keep copies of your backups somewhere else too (USB stick, cloud drive) — they
 npm test
 ```
 
-71 tests, no extra dependencies beyond what the app already uses (Node's built-in test runner):
+74 tests, no extra dependencies beyond what the app already uses (Node's built-in test runner):
 
 - **validation** — asset normalization, integer-cent conversion, formatting, all validation rules, **configured-timezone interpretation of naive timestamps**, stake/broker fields
 - **analytics** — fixed-timestamp fixtures for bucketing (incl. a DST transition), Wilson reference values, minimum sample size, ROI, **strict strongest-window gating (30 trades + CI-over-baseline) vs. the old small-N behavior**, real/demo separation
 - **import** — header alias mapping, call/put normalization, CSV parser (quotes/semicolons/CRLF), Excel files via exceljs, **broker-trade-ID duplicate detection**, ambiguous-column caveats
-- **integration** — boots the real Express app on a temporary SQLite file: CRUD, filters, CSV export, **stable IDs across close/reopen (gaps never renumbered)**, restore-with-original-ID, strict analytics, concurrent-import dedupe, the **close-and-reopen persistence guarantee**
+- **integration** — boots the real Express app on a temporary SQLite file: CRUD, filters, CSV export, **stable IDs across close/reopen (gaps never renumbered)**, restore-with-original-ID, strict analytics, **today-focus block**, concurrent-import dedupe, the **close-and-reopen persistence guarantee**
 
 ---
 
@@ -314,4 +316,5 @@ trade-timing-journal/
 - **Session 1 (DONE)** — Foundation + Persistent Backend: SQLite, migrations, WAL, CRUD API, validation, backup script.
 - **Session 2 (DONE)** — Frontend + Trade Management: entry form, trade log, filters, edit/delete, timezone-correct timestamps.
 - **Session 3 (DONE)** — Analytics + Dashboard: timezone-aware bucketing, Wilson intervals, expectancy, best-window logic for real AND demo, Chart.js dashboard, tests, documentation.
+- **Today focus + form UX (DONE)** — dashboard headline revolves around the current day (today's stats + best time to trade today from that weekday's history); trade-entry form is sticky so the Save button stays reachable while the trade log scrolls.
 - **Audit round (DONE)** — configured-timezone manual entry, stable trade IDs (no renumbering), local-only bind + no open CORS, strict "strongest observed window" (≥30 + CI over baseline), `xlsx`→`exceljs`/CSV parser, SQLite backup API + verification, stake & ROI, broker-ID duplicate detection, mapping confirmation, journal filters + CSV export, bulk-delete preview + undo, win-rate definition + CI explainer, configurable currency, shared money formatting, README sync.

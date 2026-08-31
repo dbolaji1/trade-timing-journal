@@ -62,9 +62,11 @@
       }
       state.data = data;
       state.currencySymbol = data.currency_symbol || "$";
+      const today = data.real && data.real.today ? data.real.today : null;
       $("dashHint").textContent =
         "Computed from SQLite on " + new Date(data.generated_at).toLocaleString() +
         " · bucketed in " + data.timezone +
+        " · focused on today" + (today ? " (" + today.weekdayFull + ")" : "") +
         " · buckets need ≥" + data.thresholds.minN + " trades · 95% Wilson confidence intervals.";
       renderAll();
     } catch (err) {
@@ -91,6 +93,7 @@
   /* ---------- KPI cards ---------- */
   function kpiCard(mode) {
     const s = state.data[mode].summary;
+    const t = state.data[mode].today;
     const chip = mode === "real" ? "chip-real" : "chip-demo";
     const label = mode === "real" ? "Real trades" : "Demo trades";
     const caveat = s.smallSample
@@ -100,6 +103,10 @@
     const roiRow = s.roiPct === null || s.roiPct === undefined
       ? ""
       : '<div><span>ROI (of stake)</span><b>' + pctPoints(s.roiPct) + "</b></div>";
+    const todayRow = t && t.summary
+      ? '<div><span>Today (' + esc(t.weekday) + ")</span><b>" + t.summary.n +
+        " trade" + (t.summary.n === 1 ? "" : "s") + "</b></div>"
+      : "";
     return (
       '<div class="kpi ' + mode + '">' +
         "<h3>" + label + ' <span class="chip ' + chip + '">' + mode + "</span></h3>" +
@@ -110,6 +117,7 @@
           '<div><span>Expectancy</span><b>' + usdCents(s.expectancyCents) + "</b></div>" +
           '<div><span>Total P&amp;L</span><b>' + usdCents(s.totalPnlCents) + "</b></div>" +
           roiRow +
+          todayRow +
         "</div>" + caveat +
       "</div>"
     );
@@ -119,71 +127,104 @@
     $("kpiCards").innerHTML = kpiCard("real") + kpiCard("demo");
   }
 
-  /* ---------- Strongest-window cards ---------- */
-  function bestBlock(mode, dimension, best) {
-    const thresholds = state.data.thresholds;
+  /* ---------- Today cards (the headline) ---------- */
+
+  // Summary rows for "today so far".
+  function todaySummaryRows(mode) {
+    const t = state.data[mode].today;
+    const s = t.summary;
+    const roiRow = s.roiPct === null || s.roiPct === undefined
+      ? ""
+      : '<div class="best-line"><span>ROI (of stake)</span><b>' + pctPoints(s.roiPct) + "</b></div>";
+    const caveat = s.n > 0 && s.smallSample
+      ? '<p class="caveat">Small sample today (' + s.n + " < " +
+        state.data.thresholds.bestSmallSampleN + ") — today is still in progress.</p>"
+      : s.n === 0
+        ? '<p class="best-none">No ' + mode + " trades logged today yet.</p>"
+        : "";
+    return (
+      "<div>" +
+        '<div class="best-line"><span>Trades today</span><b>' + s.n + " (" + s.wins + " wins)</b></div>" +
+        '<div class="best-line"><span>Win rate today</span><b>' + pct(s.winRate) + "</b></div>" +
+        '<div class="best-line"><span>95% CI</span><b>' + pct(s.ciLower) + " – " + pct(s.ciUpper) + "</b></div>" +
+        '<div class="best-line"><span>Expectancy</span><b>' + usdCents(s.expectancyCents) + "</b></div>" +
+        '<div class="best-line"><span>P&amp;L today</span><b>' + usdCents(s.totalPnlCents) + "</b></div>" +
+        roiRow +
+        caveat +
+      "</div>"
+    );
+  }
+
+  // The best time of day on today's weekday (e.g. best MONDAY hour).
+  function todayBestHourBlock(mode, t) {
+    const th = state.data.thresholds;
+    const best = t.bestHour;
+    const weekdayName = t.weekdayFull;
     if (!best.found) {
       const baselineText = best.baselineWinRate === 0
-        ? "no baseline yet (no " + mode + " trades)"
-        : "the " + mode + " baseline is " + pct(best.baselineWinRate) + ".";
+        ? "no baseline yet (no " + weekdayName + " trades)"
+        : "the " + weekdayName + " baseline is " + pct(best.baselineWinRate) + ".";
       return (
         '<div class="best-none">' +
-          "<strong>No qualifying " + dimension + " yet.</strong><br>" +
-          "A " + dimension + " qualifies only when it has at least " + thresholds.bestMinN + " " + mode +
-          " trades, a win rate more than " + thresholds.bestMarginPct + " percentage points above the " +
-          mode + " baseline, and a 95% confidence lower bound above that baseline — currently " + baselineText +
-          "<br><span class='faint'>Candidates are ranked by the Wilson lower bound, never by raw win rate.</span>" +
+          "<strong>No qualifying hour on " + weekdayName + "s yet.</strong><br>" +
+          "An hour qualifies with at least " + th.todayMinN + " " + weekdayName + " trades, a win rate more than " +
+          th.todayMarginPct + " points above the " + weekdayName + " baseline, and a confidence lower bound above it — currently " +
+          baselineText +
+          "<br><span class='faint'>Based on " + (t.baseline ? t.baseline.n : 0) + " " + weekdayName + " trades so far.</span>" +
         "</div>"
       );
     }
     const w = best.window;
     const caveat = w.smallSample
-      ? '<p class="caveat">Small sample (N=' + w.n + " < " + thresholds.bestSmallSampleN +
-        ") — treat as a hypothesis, not proof.</p>"
+      ? '<p class="caveat">Small sample (N=' + w.n + " < " + th.todaySmallSampleN +
+        ") — treat as a hint about " + weekdayName + "s, not proof.</p>"
       : "";
     const roiRow = w.roiPct === null || w.roiPct === undefined
       ? ""
       : '<div class="best-line"><span>ROI (of stake)</span><b>' + pctPoints(w.roiPct) + "</b></div>";
-    // Plain-language confidence explainer (required by the audit).
     const explainer =
       '<p class="best-note">What the interval means: if you repeated this sample many times, the true win rate ' +
       'would usually fall between <b>' + pct(w.ciLower) + "</b> and <b>" + pct(w.ciUpper) +
       "</b>. Narrow intervals = more trustworthy; wide intervals = treat with caution.</p>";
     return (
-      '<div class="best-title">' + esc(windowTitle(dimension, w.label)) + "</div>" +
+      '<div class="best-title">' + esc(windowTitle("hour", w.label)) + "</div>" +
       '<div class="best-line"><span>Win rate</span><b>' + pct(w.winRate) + "</b></div>" +
-      '<div class="best-line"><span>Sample size</span><b>' + w.n + " trades (" + w.wins + " wins)</b></div>" +
+      '<div class="best-line"><span>Sample size</span><b>' + w.n + " " + weekdayName + " trades (" + w.wins + " wins)</b></div>" +
       '<div class="best-line"><span>95% CI (Wilson)</span><b>' + pct(w.ciLower) + " – " + pct(w.ciUpper) + "</b></div>" +
       '<div class="best-line"><span>Expectancy</span><b>' + usdCents(w.expectancyCents) + "</b></div>" +
       roiRow +
-      '<div class="best-line"><span>vs ' + mode + " baseline</span><b>" +
+      '<div class="best-line"><span>vs ' + weekdayName + " baseline</span><b>" +
         pct(w.winRate - w.baselineWinRate, 1) + " above " + pct(w.baselineWinRate) + "</b></div>" +
-      '<p class="best-note faint">Qualifies with ≥' + thresholds.bestMinN + " trades, >" +
-        thresholds.bestMarginPct + " pts over the " + mode + " baseline, and the Wilson lower bound above baseline.</p>" +
+      '<p class="best-note faint">Qualifies with ≥' + th.todayMinN + " " + weekdayName + " trades, >" +
+        th.todayMarginPct + " pts over the " + weekdayName + " baseline, and the Wilson lower bound above it.</p>" +
       explainer +
       caveat
     );
   }
 
-  function bestCard(mode) {
+  function todayCard(mode) {
     const a = state.data[mode];
+    const t = a.today;
     const chip = mode === "real" ? "chip-real" : "chip-demo";
     const demoNote = mode === "demo"
       ? '<p class="best-note" style="color:var(--amber)">Demo = practice data. It is analysed with its own baseline and never mixed into real statistics.</p>'
       : "";
+    if (!t) return "";
     return (
-      '<div class="best-card ' + mode + '">' +
-        '<h3>Strongest observed — ' + mode + ' trades <span class="chip ' + chip + '">' + mode + "</span></h3>" +
-        '<p class="best-note faint">"Strongest", not "best", on purpose: with 31 buckets tested, some look good by chance alone.</p>' +
+      '<div class="best-card ' + mode + ' today-card">' +
+        "<h3>Today — " + esc(t.weekdayFull) + ' (' + esc(t.date) + ') <span class="chip ' + chip + '">' + mode + "</span></h3>" +
+        '<p class="best-note faint">Focused on today (' + esc(t.weekdayFull) +
+          '). The "best time" below is based on your ' + esc(t.weekdayFull) + " trades across all weeks.</p>" +
         demoNote +
-        '<div class="best-block"><h4>Hour of day</h4>' + bestBlock(mode, "hour", a.bestHour) + "</div>" +
-        '<div class="best-block"><h4>Day of week</h4>' + bestBlock(mode, "weekday", a.bestWeekday) + "</div>" +
+        '<div class="best-block"><h4>Today so far</h4>' + todaySummaryRows(mode) + "</div>" +
+        '<div class="best-block"><h4>Best time to trade on ' + esc(t.weekdayFull) + "s</h4>" +
+          todayBestHourBlock(mode, t) + "</div>" +
       "</div>"
     );
   }
 
   function renderBestCards() {
-    $("bestCards").innerHTML = bestCard("real") + bestCard("demo");
+    $("bestCards").innerHTML = todayCard("real") + todayCard("demo");
   }
 
   /* ---------- Tables (real and demo side by side, never blended) ---------- */
@@ -204,13 +245,15 @@
     );
   }
 
-  function renderDimensionTable(bodyId, bucketsByMode, labels) {
+  function renderDimensionTable(bodyId, bucketsByMode, labels, todayKey) {
     const rows = labels.map((label) => {
       const r = bucketsByMode.real.find((b) => b.key === label.key);
       const d = bucketsByMode.demo.find((b) => b.key === label.key);
+      const isToday = todayKey !== undefined && todayKey !== null && label.key === todayKey;
+      const display = isToday ? label.display + ' <span class="chip chip-today">today</span>' : label.display;
       return (
-        "<tr>" +
-        '<td class="nowrap"><b>' + esc(label.display) + "</b></td>" +
+        "<tr" + (isToday ? ' class="today-row"' : "") + ">" +
+        '<td class="nowrap"><b>' + display + "</b></td>" +
         modeCells(r) +
         modeCells(d) +
         "</tr>"
@@ -223,8 +266,9 @@
     const data = state.data;
     const hourLabels = data.real.hourly.map((b) => ({ key: b.key, display: hourRange(b.label) }));
     const dayLabels = data.real.weekday.map((b) => ({ key: b.key, display: b.label }));
+    const todayKey = data.real.today ? data.real.today.weekdayKey : null;
     renderDimensionTable("hourlyBody", { real: data.real.hourly, demo: data.demo.hourly }, hourLabels);
-    renderDimensionTable("weekdayBody", { real: data.real.weekday, demo: data.demo.weekday }, dayLabels);
+    renderDimensionTable("weekdayBody", { real: data.real.weekday, demo: data.demo.weekday }, dayLabels, todayKey);
   }
 
   /* ---------- Charts ---------- */

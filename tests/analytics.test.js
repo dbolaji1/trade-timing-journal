@@ -455,3 +455,73 @@ test("computeAnalytics: no mode can beat a perfect baseline (honest null)", () =
   assert.equal(a.real.summary.winRate, 1);
   assert.equal(a.real.bestHour.found, false);
 });
+
+/* ============================================================
+ * "Today" focus: the dashboard revolves around the current day
+ * and the best time of day on the current weekday.
+ * 2024-01-15 is a Monday in Africa/Lagos.
+ * ============================================================ */
+
+test("computeAnalytics: today block isolates the current calendar day", () => {
+  const trades = [
+    // Monday 2024-01-15 (today) — real
+    trade(lagosHour(8, 15, 10), "win", 100),
+    trade(lagosHour(8, 15, 20), "win", 100),
+    trade(lagosHour(9, 15, 10), "loss", -50),
+    // Tuesday 2024-01-16 — must NOT count as today
+    trade(lagosHour(8, 16, 10), "win", 100),
+    trade(lagosHour(8, 16, 20), "win", 100),
+    // Monday today — demo
+    trade(lagosHour(12, 15, 10), "win", 999, "demo"),
+  ];
+  const a = computeAnalytics(trades, "Africa/Lagos", CONFIG.ANALYTICS, { today: "2024-01-15" });
+
+  assert.equal(a.real.today.date, "2024-01-15");
+  assert.equal(a.real.today.weekday, "Mon");
+  assert.equal(a.real.today.weekdayFull, "Monday");
+  assert.equal(a.real.today.weekdayKey, 0);
+  assert.equal(a.real.today.summary.n, 3, "only 2024-01-15 real trades count");
+  assert.equal(a.real.today.summary.wins, 2);
+  assert.equal(a.real.today.summary.totalPnlCents, 150);
+  assert.equal(a.demo.today.summary.n, 1);
+  // Start/end are the Lagos day: 00:00 Lagos = 23:00Z the previous day.
+  assert.equal(a.real.today.startIso, "2024-01-14T23:00:00.000Z");
+  assert.equal(a.real.today.endIso, "2024-01-15T23:00:00.000Z");
+});
+
+test("computeAnalytics: today's best hour uses ONLY this weekday's trades", () => {
+  // Monday (2024-01-15 + 2024-01-22): hour 8 = 20 trades/17 wins (85%),
+  // hour 9 = 20 trades/8 wins (40%) => Monday baseline 62.5%.
+  // Wilson lower bound of 17/20 (~0.640) clears 62.5%, so hour 8 qualifies.
+  // Tuesday 2024-01-16 has a perfect 100% hour 12 — it must be IGNORED.
+  const trades = [];
+  for (let i = 0; i < 10; i += 1) {
+    // 2024-01-15 (today): hour 8 -> 8 wins, hour 9 -> 2 wins
+    trades.push(trade(lagosHour(8, 15, (i % 12) * 5), i < 8 ? "win" : "loss", 10));
+    trades.push(trade(lagosHour(9, 15, (i % 12) * 5), i < 2 ? "win" : "loss", 10));
+    // 2024-01-22 (last Monday): hour 8 -> 9 wins, hour 9 -> 6 wins
+    trades.push(trade(lagosHour(8, 22, (i % 12) * 5), i < 9 ? "win" : "loss", 10));
+    trades.push(trade(lagosHour(9, 22, (i % 12) * 5), i < 6 ? "win" : "loss", 10));
+    // Tuesday 2024-01-16: perfect 100% at hour 12 — must be excluded
+    trades.push(trade(lagosHour(12, 16, (i % 12) * 5), "win", 10));
+    trades.push(trade(lagosHour(12, 23, (i % 12) * 5), "win", 10));
+  }
+  const a = computeAnalytics(trades, "Africa/Lagos", CONFIG.ANALYTICS, { today: "2024-01-15" });
+
+  assert.equal(a.real.today.summary.n, 20, "just 2024-01-15 trades");
+  const best = a.real.today.bestHour;
+  assert.equal(best.found, true);
+  assert.equal(best.window.key, 8);
+  assert.equal(best.window.n, 20, "uses Monday trades across weeks, not all days");
+  assert.equal(best.window.wins, 17);
+  assert.ok(best.window.ciLower > a.real.today.baseline.winRate, "CI lower bound above Monday baseline");
+  assert.ok(Math.abs(a.real.today.baseline.winRate - 25 / 40) < 1e-9);
+});
+
+test("computeAnalytics: today block is honest when there are no trades today", () => {
+  const trades = [trade(lagosHour(8, 16, 10), "win", 100)]; // Tuesday only
+  const a = computeAnalytics(trades, "Africa/Lagos", CONFIG.ANALYTICS, { today: "2024-01-15" });
+  assert.equal(a.real.today.summary.n, 0);
+  assert.equal(a.real.today.summary.winRate, null);
+  assert.equal(a.real.today.bestHour.found, false);
+});

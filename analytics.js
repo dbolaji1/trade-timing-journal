@@ -26,6 +26,7 @@
 "use strict";
 
 const CONFIG = require("./config");
+const { todayInfo } = require("./time");
 
 const WEEKDAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const WEEKDAY_INDEX = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
@@ -241,10 +242,74 @@ function pickBestWindow(buckets, summary, cfg = CONFIG.ANALYTICS) {
 }
 
 /* ============================================================
- * Full analytics for all trades, real and demo kept separate.
+ * "Today" focus (the dashboard headline).
+ *
+ * The dashboard revolves around TODAY:
+ *  - `summary`  = stats for the current calendar day (in the configured
+ *                 timezone), so you see how today is going.
+ *  - `bestHour` = the strongest hour of day on TODAY'S WEEKDAY, computed from
+ *                 that weekday's trades across all weeks (e.g. Mondays). It
+ *                 answers "when is the best time to trade today?" and uses a
+ *                 slightly lower bar than the overall strongest window
+ *                 (CONFIG.TODAY) because there is much less data per weekday.
+ *                 The UI always shows how many trades the hint is based on.
  * ============================================================ */
 
-function computeAnalytics(trades, timezone = CONFIG.TIMEZONE, cfg = CONFIG.ANALYTICS) {
+function todayConfig(cfg) {
+  const t = cfg && cfg.TODAY ? cfg.TODAY : CONFIG.TODAY;
+  return {
+    MIN_N: t.BEST_MIN_N,
+    BEST_MIN_N: t.BEST_MIN_N,
+    BEST_MARGIN: t.BEST_MARGIN,
+    BEST_REQUIRE_CI_OVER_BASELINE: t.BEST_REQUIRE_CI_OVER_BASELINE,
+    BEST_SMALL_SAMPLE_N: t.BEST_SMALL_SAMPLE_N,
+    WILSON_Z: t.WILSON_Z,
+  };
+}
+
+function buildTodayBlock(modeTrades, today, timezone, cfg) {
+  const todayCfg = todayConfig(cfg);
+
+  // Trades that happened on the current calendar day.
+  const todayTrades = modeTrades.filter(
+    (t) => t.timestamp_utc >= today.startIso && t.timestamp_utc < today.endIso
+  );
+
+  // All trades on this weekday across every week (e.g. every Monday) — the
+  // data used to find the best time of day to trade today.
+  const weekdayTrades = modeTrades.filter(
+    (t) => bucketTimestamp(t.timestamp_utc, timezone).weekday === today.weekday
+  );
+  const weekdaySummary = summarizeTrades(weekdayTrades, cfg);
+  const weekdayHourly = buildBucketStats(weekdayTrades, "hour", timezone, todayCfg);
+
+  return {
+    date: today.date,
+    weekday: today.weekday,
+    weekdayFull: today.weekdayFull,
+    weekdayKey: WEEKDAY_INDEX[today.weekday],
+    startIso: today.startIso,
+    endIso: today.endIso,
+    summary: summarizeTrades(todayTrades, cfg),
+    baseline: {
+      n: weekdaySummary.n,
+      winRate: weekdaySummary.winRate,
+    },
+    bestHour: pickBestWindow(weekdayHourly, weekdaySummary, todayCfg),
+  };
+}
+
+/* ============================================================
+ * Full analytics for all trades, real and demo kept separate.
+ * `opts.today` may be a "YYYY-MM-DD" string (tests) or a todayInfo
+ * object; otherwise the real current date in the timezone is used.
+ * ============================================================ */
+
+function computeAnalytics(trades, timezone = CONFIG.TIMEZONE, cfg = CONFIG.ANALYTICS, opts = {}) {
+  const today = typeof opts.today === "string"
+    ? todayInfo(timezone, opts.today)
+    : opts.today || todayInfo(timezone);
+
   const analyzeMode = (modeTrades) => {
     const summary = summarizeTrades(modeTrades, cfg);
     const hourly = buildBucketStats(modeTrades, "hour", timezone, cfg);
@@ -255,6 +320,7 @@ function computeAnalytics(trades, timezone = CONFIG.TIMEZONE, cfg = CONFIG.ANALY
       weekday,
       bestHour: pickBestWindow(hourly, summary, cfg),
       bestWeekday: pickBestWindow(weekday, summary, cfg),
+      today: buildTodayBlock(modeTrades, today, timezone, cfg),
     };
   };
 

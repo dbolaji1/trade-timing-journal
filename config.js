@@ -57,6 +57,21 @@ const CONFIG = {
     // z-score for 95% Wilson confidence intervals.
     WILSON_Z: 1.96,
   },
+
+  // "Today" focus (the dashboard's headline): stats for the current day and the
+  // strongest time of day ON THIS WEEKDAY (e.g. Mondays), so the answer always
+  // revolves around today instead of listing a different best day every week.
+  // The bar is deliberately lower than BEST_MIN_N (the app has much less data
+  // per weekday than overall), but the same honesty rules still apply: margin
+  // over the weekday baseline AND confidence lower bound above baseline. The
+  // UI always states how many trades the hint is based on.
+  TODAY: {
+    BEST_MIN_N: 5,
+    BEST_MARGIN: 0.05,
+    BEST_REQUIRE_CI_OVER_BASELINE: true,
+    BEST_SMALL_SAMPLE_N: 30,
+    WILSON_Z: 1.96,
+  },
 };
 
 module.exports = CONFIG;

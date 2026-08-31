@@ -283,6 +283,9 @@ test("GET /api/analytics returns honest, separated statistics with strict thresh
   assert.equal(a.thresholds.bestMinN, 30);
   assert.equal(a.thresholds.bestMarginPct, 5);
   assert.equal(a.thresholds.bestRequireCiOverBaseline, true);
+  assert.equal(a.thresholds.todayMinN, 5);
+  assert.equal(a.thresholds.todayMarginPct, 5);
+  assert.equal(a.thresholds.todayRequireCiOverBaseline, true);
 
   assert.equal(a.real.hourly.length, 24);
   assert.equal(a.real.weekday.length, 7);
@@ -309,6 +312,20 @@ test("GET /api/analytics returns honest, separated statistics with strict thresh
   // Demo stays separate: 1 demo trade, no demo best-window.
   assert.equal(a.demo.summary.n, 1);
   assert.equal(a.demo.bestHour.found, false);
+
+  // The "today" block exists per mode and is shaped correctly.
+  for (const mode of ["real", "demo"]) {
+    const t = a[mode].today;
+    assert.ok(t, mode + " must include a today block");
+    assert.match(t.date, /^\d{4}-\d{2}-\d{2}$/);
+    assert.match(t.weekday, /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/);
+    assert.equal(typeof t.summary.n, "number");
+    assert.equal(typeof t.baseline.n, "number");
+    assert.equal(typeof t.bestHour.found, "boolean");
+  }
+  // Real and demo see the same calendar day.
+  assert.equal(a.real.today.date, a.demo.today.date);
+  assert.equal(a.real.today.weekday, a.demo.today.weekday);
 });
 
 test("GET /api/analytics: ROI is derived when stakes exist", async () => {
