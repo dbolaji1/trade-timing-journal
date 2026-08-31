@@ -1,15 +1,24 @@
 /* ============================================================
-   Trade Timing Journal — Analytics Dashboard (Session 3)
+   Trade Timing Journal — Analytics Dashboard
    Vanilla JavaScript + Chart.js (vendored locally, no CDN).
 
    Data source: GET /api/analytics — computed server-side from
    SQLite on every load. Real and demo are separate everywhere.
+
+   Honesty rules the UI follows:
+   - The headline callout is "Strongest observed window", not "Best
+     window": ~31 buckets are tested and some look good by chance.
+     A window only qualifies at >=30 trades, >5pts over baseline,
+     AND Wilson 95% lower bound above baseline.
+   - Every callout carries a one-line plain-English CI explainer.
+   - Win rate = wins / all trades (breakevens in the denominator).
    ============================================================ */
 
 "use strict";
 
 (function () {
   const $ = (id) => document.getElementById(id);
+  const F = window.TT_FORMAT || { usd: (c) => c, pct: (x) => x, pctPoints: (x) => x };
 
   const COLORS = { real: "#38bdf8", demo: "#fcd34d" };
   const BAND = { real: "rgba(56,189,248,0.25)", demo: "rgba(252,211,77,0.28)" };
@@ -20,18 +29,13 @@
     mode: "both", // both | real | demo (which series/CI bands the charts show)
     visible: false,
     charts: [],
+    currencySymbol: "$",
   };
 
-  /* ---------- formatting ---------- */
-  const pct = (x, digits) =>
-    x === null || x === undefined ? "—" : (x * 100).toFixed(digits === undefined ? 1 : digits) + "%";
-
-  function usdCents(cents) {
-    if (cents === null || cents === undefined) return "—";
-    const sign = cents < 0 ? "-" : "";
-    const abs = Math.abs(cents);
-    return sign + "$" + Math.floor(abs / 100).toLocaleString("en-US") + "." + String(abs % 100).padStart(2, "0");
-  }
+  /* ---------- formatting (single implementation: format.js) ---------- */
+  const pct = (x, digits) => F.pct(x, digits);
+  const pctPoints = (x, digits) => F.pctPoints(x, digits);
+  const usdCents = (cents) => F.usd(cents, state.currencySymbol);
 
   const esc = (s) =>
     String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -57,6 +61,7 @@
         return;
       }
       state.data = data;
+      state.currencySymbol = data.currency_symbol || "$";
       $("dashHint").textContent =
         "Computed from SQLite on " + new Date(data.generated_at).toLocaleString() +
         " · bucketed in " + data.timezone +
@@ -92,6 +97,9 @@
       ? '<p class="caveat">Small sample (fewer than ' + state.data.thresholds.bestSmallSampleN +
         " trades) — treat these numbers as provisional.</p>"
       : "";
+    const roiRow = s.roiPct === null || s.roiPct === undefined
+      ? ""
+      : '<div><span>ROI (of stake)</span><b>' + pctPoints(s.roiPct) + "</b></div>";
     return (
       '<div class="kpi ' + mode + '">' +
         "<h3>" + label + ' <span class="chip ' + chip + '">' + mode + "</span></h3>" +
@@ -101,6 +109,7 @@
           '<div><span>95% CI</span><small>' + pct(s.ciLower) + " – " + pct(s.ciUpper) + "</small></div>" +
           '<div><span>Expectancy</span><b>' + usdCents(s.expectancyCents) + "</b></div>" +
           '<div><span>Total P&amp;L</span><b>' + usdCents(s.totalPnlCents) + "</b></div>" +
+          roiRow +
         "</div>" + caveat +
       "</div>"
     );
@@ -110,7 +119,7 @@
     $("kpiCards").innerHTML = kpiCard("real") + kpiCard("demo");
   }
 
-  /* ---------- Best-window cards ---------- */
+  /* ---------- Strongest-window cards ---------- */
   function bestBlock(mode, dimension, best) {
     const thresholds = state.data.thresholds;
     if (!best.found) {
@@ -120,9 +129,9 @@
       return (
         '<div class="best-none">' +
           "<strong>No qualifying " + dimension + " yet.</strong><br>" +
-          "A " + dimension + " qualifies when it has at least " + thresholds.bestMinN + " " + mode +
-          " trades and a win rate more than " + thresholds.bestMarginPct +
-          " percentage points above the " + mode + " baseline — currently " + baselineText +
+          "A " + dimension + " qualifies only when it has at least " + thresholds.bestMinN + " " + mode +
+          " trades, a win rate more than " + thresholds.bestMarginPct + " percentage points above the " +
+          mode + " baseline, and a 95% confidence lower bound above that baseline — currently " + baselineText +
           "<br><span class='faint'>Candidates are ranked by the Wilson lower bound, never by raw win rate.</span>" +
         "</div>"
       );
@@ -132,16 +141,26 @@
       ? '<p class="caveat">Small sample (N=' + w.n + " < " + thresholds.bestSmallSampleN +
         ") — treat as a hypothesis, not proof.</p>"
       : "";
+    const roiRow = w.roiPct === null || w.roiPct === undefined
+      ? ""
+      : '<div class="best-line"><span>ROI (of stake)</span><b>' + pctPoints(w.roiPct) + "</b></div>";
+    // Plain-language confidence explainer (required by the audit).
+    const explainer =
+      '<p class="best-note">What the interval means: if you repeated this sample many times, the true win rate ' +
+      'would usually fall between <b>' + pct(w.ciLower) + "</b> and <b>" + pct(w.ciUpper) +
+      "</b>. Narrow intervals = more trustworthy; wide intervals = treat with caution.</p>";
     return (
       '<div class="best-title">' + esc(windowTitle(dimension, w.label)) + "</div>" +
       '<div class="best-line"><span>Win rate</span><b>' + pct(w.winRate) + "</b></div>" +
       '<div class="best-line"><span>Sample size</span><b>' + w.n + " trades (" + w.wins + " wins)</b></div>" +
       '<div class="best-line"><span>95% CI (Wilson)</span><b>' + pct(w.ciLower) + " – " + pct(w.ciUpper) + "</b></div>" +
       '<div class="best-line"><span>Expectancy</span><b>' + usdCents(w.expectancyCents) + "</b></div>" +
+      roiRow +
       '<div class="best-line"><span>vs ' + mode + " baseline</span><b>" +
         pct(w.winRate - w.baselineWinRate, 1) + " above " + pct(w.baselineWinRate) + "</b></div>" +
-      '<p class="best-note faint">Selected by Wilson lower bound, requiring ≥' + thresholds.bestMinN +
-        " trades and >" + thresholds.bestMarginPct + " pts over the " + mode + " baseline.</p>" +
+      '<p class="best-note faint">Qualifies with ≥' + thresholds.bestMinN + " trades, >" +
+        thresholds.bestMarginPct + " pts over the " + mode + " baseline, and the Wilson lower bound above baseline.</p>" +
+      explainer +
       caveat
     );
   }
@@ -154,7 +173,8 @@
       : "";
     return (
       '<div class="best-card ' + mode + '">' +
-        '<h3>Best window — ' + mode + ' trades <span class="chip ' + chip + '">' + mode + "</span></h3>" +
+        '<h3>Strongest observed — ' + mode + ' trades <span class="chip ' + chip + '">' + mode + "</span></h3>" +
+        '<p class="best-note faint">"Strongest", not "best", on purpose: with 31 buckets tested, some look good by chance alone.</p>' +
         demoNote +
         '<div class="best-block"><h4>Hour of day</h4>' + bestBlock(mode, "hour", a.bestHour) + "</div>" +
         '<div class="best-block"><h4>Day of week</h4>' + bestBlock(mode, "weekday", a.bestWeekday) + "</div>" +
@@ -307,7 +327,7 @@
     const cfg = {
       type: "bar",
       data: { labels, datasets: [] },
-      options: baseBarOptions(null, "$"),
+      options: baseBarOptions(null, state.currencySymbol),
     };
 
     const addBars = (mode, buckets) => {

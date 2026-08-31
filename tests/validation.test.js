@@ -167,3 +167,57 @@ test("derivePnlSign: sign applied to a direct pnl_cents input too", () => {
   assert.equal(derivePnlSign("win", 100), 100);
   assert.equal(derivePnlSign("loss", -100), -100);
 });
+
+/* ============================================================
+ * Audit round: timezone-correct naive timestamps + stake/broker
+ * ============================================================ */
+
+test("validateTrade: naive timestamp is interpreted in the CONFIGURED timezone (Africa/Lagos)", () => {
+  // 2026-08-10 07:12 Lagos = 06:12 UTC (Africa/Lagos is UTC+1, no DST).
+  const r = validateTrade({
+    asset: "BTC", direction: "long", outcome: "win", amount: 10, mode: "real",
+    timestamp: "2026-08-10T07:12",
+  });
+  assert.equal(r.valid, true, JSON.stringify(r.errors));
+  assert.equal(r.sanitized.timestamp_utc, "2026-08-10T06:12:00.000Z");
+});
+
+test("validateTrade: explicit-Z timestamp stays an absolute instant", () => {
+  const r = validateTrade({
+    asset: "BTC", direction: "long", outcome: "win", amount: 10, mode: "real",
+    timestamp: "2026-08-10T07:12:00Z",
+  });
+  assert.equal(r.sanitized.timestamp_utc, "2026-08-10T07:12:00.000Z");
+});
+
+test("validateTrade: stake is optional, positive magnitude in cents", () => {
+  const base = { asset: "BTC", direction: "long", outcome: "win", amount: 10, mode: "real", timestamp: "2026-08-10T08:12:00Z" };
+  const none = validateTrade(base);
+  assert.equal(none.valid, true);
+  assert.equal(none.sanitized.stake_cents, null);
+
+  const withStake = validateTrade({ ...base, stake: "-50.25" });
+  assert.equal(withStake.valid, true);
+  assert.equal(withStake.sanitized.stake_cents, 5025);
+
+  const badStake = validateTrade({ ...base, stake: "abc" });
+  assert.equal(badStake.valid, false);
+  assert.ok(badStake.errors.some((e) => e.includes("Stake must be a finite number")));
+});
+
+test("validateTrade: broker and broker_trade_id are stored when provided", () => {
+  const r = validateTrade({
+    asset: "BTC", direction: "long", outcome: "win", amount: 10, mode: "real",
+    timestamp: "2026-08-10T08:12:00Z",
+    broker: "Pocket Option", broker_trade_id: " 107352634 ",
+  });
+  assert.equal(r.valid, true);
+  assert.equal(r.sanitized.broker, "Pocket Option");
+  assert.equal(r.sanitized.broker_trade_id, "107352634");
+
+  const tooLong = validateTrade({
+    asset: "BTC", direction: "long", outcome: "win", amount: 10, mode: "real",
+    timestamp: "2026-08-10T08:12:00Z", broker_trade_id: "x".repeat(101),
+  });
+  assert.equal(tooLong.valid, false);
+});

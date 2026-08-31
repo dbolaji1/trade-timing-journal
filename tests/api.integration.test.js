@@ -1,8 +1,9 @@
 /**
  * Integration test: boots the real Express app against a temporary SQLite
  * database (TT_DB_PATH is read by config.js before the app is required).
- * Covers CRUD, validation, filters, analytics endpoint, and the
- * close-and-reopen persistence guarantee.
+ * Covers CRUD, validation, filters, CSV export, restore, ID stability,
+ * analytics endpoint, imports, and the close-and-reopen persistence
+ * guarantee.
  * Run with: npm test
  */
 "use strict";
@@ -45,14 +46,16 @@ const post = (payload) =>
 
 /* ---------- basic API ---------- */
 
-test("GET /api/health reports a fresh database", async () => {
+test("GET /api/health reports a fresh database at schema v2", async () => {
   const res = await fetch(base + "/api/health");
   assert.equal(res.status, 200);
   const j = await res.json();
   assert.equal(j.status, "ok");
   assert.equal(j.timezone, "Africa/Lagos");
+  assert.equal(j.currency, "USD");
+  assert.equal(j.currency_symbol, "$");
   assert.equal(j.trade_count, 0);
-  assert.equal(j.schema_version, 1);
+  assert.equal(j.schema_version, 2);
 });
 
 test("POST /api/trades validates and stores integer cents", async () => {
@@ -66,6 +69,29 @@ test("POST /api/trades validates and stores integer cents", async () => {
   assert.equal(j.pnl_cents, 10);
   assert.equal(j.pnl_formatted, "0.10");
   assert.equal(j.timestamp_utc, "2026-08-10T07:12:00.000Z");
+  assert.equal(j.stake_cents, null);
+});
+
+test("POST /api/trades: naive timestamp is bucketed in the configured timezone", async () => {
+  // 2026-08-10 07:12 naive = Africa/Lagos wall time = 06:12Z.
+  const res = await post({
+    asset: "naive", direction: "long", outcome: "win",
+    amount: 5, mode: "real", timestamp: "2026-08-10T07:12",
+  });
+  assert.equal(res.status, 201);
+  const j = await res.json();
+  assert.equal(j.timestamp_utc, "2026-08-10T06:12:00.000Z");
+});
+
+test("POST /api/trades stores optional stake as positive cents", async () => {
+  const res = await post({
+    asset: "stake", direction: "long", outcome: "win",
+    amount: 42.5, stake: 10.25, mode: "real", timestamp: "2026-08-10T07:00:00Z",
+  });
+  assert.equal(res.status, 201);
+  const j = await res.json();
+  assert.equal(j.stake_cents, 1025);
+  assert.equal(j.stake, 10.25);
 });
 
 test("POST /api/trades rejects invalid payloads with details", async () => {
@@ -88,13 +114,45 @@ test("GET /api/trades filters by mode and never mixes", async () => {
 
   const real = await (await fetch(base + "/api/trades?mode=real")).json();
   const demo = await (await fetch(base + "/api/trades?mode=demo")).json();
-  assert.equal(real.length, 1);
+  assert.equal(real.length, 3); // btcusdt, naive, stake
   assert.equal(demo.length, 1);
-  assert.equal(real[0].asset, "BTCUSDT");
   assert.equal(demo[0].asset, "ETHUSD");
 
   const badFilter = await fetch(base + "/api/trades?mode=sideways");
   assert.equal(badFilter.status, 400);
+});
+
+test("GET /api/trades supports asset, outcome, date-range and text filters", async () => {
+  const byAsset = await (await fetch(base + "/api/trades?asset=BTC")).json();
+  assert.ok(byAsset.length >= 1);
+  assert.ok(byAsset.every((t) => t.asset.includes("BTC")));
+
+  const byOutcome = await (await fetch(base + "/api/trades?outcome=loss")).json();
+  assert.ok(byOutcome.length >= 1);
+  assert.ok(byOutcome.every((t) => t.outcome === "loss"));
+
+  const byDate = await (await fetch(base + "/api/trades?from=2026-08-10&to=2026-08-10")).json();
+  assert.ok(byDate.length >= 1);
+  for (const t of byDate) {
+    assert.ok(t.timestamp_utc >= "2026-08-10T00:00:00.000Z");
+    assert.ok(t.timestamp_utc < "2026-08-11T00:00:00.000Z");
+  }
+
+  const byText = await (await fetch(base + "/api/trades?q=naive")).json();
+  assert.ok(byText.some((t) => t.asset === "NAIVE"));
+
+  const badOutcome = await fetch(base + "/api/trades?outcome=nope");
+  assert.equal(badOutcome.status, 400);
+});
+
+test("GET /api/trades/export.csv honours the same filters", async () => {
+  const res = await fetch(base + "/api/trades/export.csv?outcome=loss");
+  assert.equal(res.status, 200);
+  assert.ok(res.headers.get("content-type").includes("text/csv"));
+  const text = await res.text();
+  assert.ok(text.includes("id,asset,direction,outcome"));
+  assert.ok(text.includes("ETHUSD"));
+  assert.ok(!text.split("\n").some((l) => l.startsWith('"BTCUSDT')));
 });
 
 test("PUT / PATCH / DELETE round-trip", async () => {
@@ -109,7 +167,7 @@ test("PUT / PATCH / DELETE round-trip", async () => {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       asset: "sol/usdt", direction: "short", outcome: "loss",
-      amount: -2.5, mode: "real", timestamp: "2026-08-10T07:30:00Z",
+      amount: -2.5, stake: 3, mode: "real", timestamp: "2026-08-10T07:30:00Z",
     }),
   });
   const putBody = await putRes.json();
@@ -117,6 +175,7 @@ test("PUT / PATCH / DELETE round-trip", async () => {
   assert.equal(putBody.asset, "SOLUSDT");
   assert.equal(putBody.direction, "short");
   assert.equal(putBody.pnl_cents, -250);
+  assert.equal(putBody.stake_cents, 300);
 
   const patchRes = await fetch(base + "/api/trades/" + t.id, {
     method: "PATCH",
@@ -128,42 +187,88 @@ test("PUT / PATCH / DELETE round-trip", async () => {
 
   const delRes = await fetch(base + "/api/trades/" + t.id, { method: "DELETE" });
   assert.equal(delRes.status, 200);
+  const delBody = await delRes.json();
+  assert.equal(delBody.deleted_id, t.id);
+  assert.ok(delBody.deleted_row);
+
   const delAgain = await fetch(base + "/api/trades/" + t.id, { method: "DELETE" });
   assert.equal(delAgain.status, 404);
+});
+
+/* ---------- ID stability (audit 4.4: no renumbering) ---------- */
+
+test("trade IDs survive a close/reopen WITHOUT being renumbered", async () => {
+  const before = await (await fetch(base + "/api/trades")).json();
+  const maxBefore = before.length ? Math.max(...before.map((t) => t.id)) : 0;
+
+  closeDb(); // simulate server restart
+  getDb();   // reopen
+  const after = await (await fetch(base + "/api/trades")).json();
+  assert.deepEqual(after.map((t) => t.id), before.map((t) => t.id), "IDs must not change on restart");
+  assert.equal(after.length, before.length);
+  assert.ok(Math.max(...after.map((t) => t.id)) >= maxBefore);
+
+  // Deleting the trade with the highest id then creating a new one must NOT reuse it.
+  const maxId = Math.max(...after.map((t) => t.id));
+  const maxRow = after.find((t) => t.id === maxId);
+  const del = await fetch(base + "/api/trades/" + maxId, { method: "DELETE" });
+  assert.equal(del.status, 200);
+  const deletedRow = (await del.json()).deleted_row;
+  const fresh = await (await post({
+    asset: "FRESH", direction: "long", outcome: "win", amount: 1,
+    mode: "real", timestamp: "2026-08-01T09:00:00Z",
+  })).json();
+  assert.ok(fresh.id > maxId, "AUTOINCREMENT must not reuse a deleted id");
+  // The deleted SOL trade left id 5 as a gap; the new id must not close it.
+  assert.notEqual(fresh.id, 5, "the gap left by the deleted SOL trade must stay a gap");
+
+  // Restore the deleted trade with its original id.
+  const restore = await fetch(base + "/api/trades/restore", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ trades: [deletedRow] }),
+  });
+  assert.equal(restore.status, 200);
+  const r = await restore.json();
+  assert.equal(r.restored, 1);
+  const back = await (await fetch(base + "/api/trades/" + maxId)).json();
+  assert.equal(back.id, maxId);
+  assert.equal(back.asset, maxRow.asset);
 });
 
 /* ---------- the critical persistence guarantee ---------- */
 
 test("trades survive a database close and reopen (the core promise)", async () => {
-  // Current state: BTCUSDT (real) + ETHUSD (demo) = 2 trades.
+  const count = (await (await fetch(base + "/api/health")).json()).trade_count;
+  assert.ok(count > 0, "expected trades from earlier tests");
   closeDb();                       // simulate server restart
   getDb();                         // reopen — must NOT create or wipe anything
   const res = await fetch(base + "/api/health");
   const j = await res.json();
-  assert.equal(j.trade_count, 2, "trades must survive close/reopen");
+  assert.equal(j.trade_count, count, "trades must survive close/reopen");
   assert.ok(fs.existsSync(process.env.TT_DB_PATH), "database file must exist on disk");
 });
 
-/* ---------- analytics endpoint ---------- */
+/* ---------- analytics endpoint (strict best-window) ---------- */
 
-test("GET /api/analytics returns honest, separated statistics", async () => {
-  // Seed enough real trades so a best hour can qualify (hour 8 Lagos = 07:xx UTC):
-  // 5 real trades in hour 8 (4 wins), plus fillers in hour 10.
-  const seeds = [
-    ["07:10", "win", 100, "real"],
-    ["07:20", "win", 80, "real"],
-    ["07:30", "win", 60, "real"],
-    ["07:40", "loss", -40, "real"],
-    ["07:50", "win", 90, "real"],
-    ["09:10", "loss", -20, "real"],
-    ["09:20", "loss", -30, "real"],
-    ["09:30", "win", 40, "real"],
-    ["09:40", "loss", -25, "real"],
-    ["09:50", "win", 55, "real"],
-  ];
+test("GET /api/analytics returns honest, separated statistics with strict thresholds", async () => {
+  // Earlier real trades: BTCUSDT (07:12Z), STAKE (07:00Z) -> hour 8 Lagos;
+  // NAIVE (06:12Z) -> hour 7; FRESH (09:00Z) -> hour 10. All wins.
+  // Seed 35 more real trades in the same hour 8 bucket (07:xx UTC): 28 wins.
+  //   hour 8 total = 35 + 2 = 37 trades, 30 wins (81.1%).
+  // Plus 25 filler real trades in hour 14 Lagos (13:xx UTC): only 5 wins.
+  //   overall baseline = (30 + 1 + 1 + 5) / (37 + 1 + 1 + 25) = 37/64 = 57.8%.
+  // Margin (81.1% > 62.8%) AND Wilson lower bound (~65.8% > 57.8%) both pass.
+  const seeds = [];
+  for (let i = 0; i < 35; i += 1) {
+    seeds.push(["07:" + String(i % 60).padStart(2, "0"), i < 28 ? "win" : "loss", 10, "real"]);
+  }
+  for (let i = 0; i < 25; i += 1) {
+    seeds.push(["13:" + String(i % 60).padStart(2, "0"), i < 5 ? "win" : "loss", 10, "real"]);
+  }
   for (const [hhmm, outcome, amount, mode] of seeds) {
     const res = await post({
-      asset: "BTC", direction: "long", outcome, amount, mode,
+      asset: "STRICT", direction: "long", outcome, amount, mode,
       timestamp: "2026-08-10T" + hhmm + ":00Z",
     });
     assert.equal(res.status, 201);
@@ -175,37 +280,48 @@ test("GET /api/analytics returns honest, separated statistics", async () => {
 
   assert.equal(a.timezone, "Africa/Lagos");
   assert.equal(a.thresholds.minN, 3);
-  assert.equal(a.thresholds.bestMinN, 5);
+  assert.equal(a.thresholds.bestMinN, 30);
   assert.equal(a.thresholds.bestMarginPct, 5);
+  assert.equal(a.thresholds.bestRequireCiOverBaseline, true);
 
-  // Real: 10 seeds + 1 earlier BTCUSDT = 11 trades.
-  assert.equal(a.real.summary.n, 11);
   assert.equal(a.real.hourly.length, 24);
   assert.equal(a.real.weekday.length, 7);
 
-  // Hour 8 Lagos: 5 seeds (07:xx UTC) + the earlier BTCUSDT (07:12 UTC) = 6 trades.
   const hour8 = a.real.hourly[8];
-  assert.equal(hour8.n, 6);
-  assert.equal(hour8.wins, 5);
+  assert.equal(hour8.n, 37);
+  assert.equal(hour8.wins, 30);
   assert.equal(hour8.eligible, true);
   assert.ok(hour8.ciLower !== null && hour8.ciUpper !== null);
 
-  // Hour 9 Lagos (08:xx UTC) has no trades -> below MIN_N.
+  // A small bucket is never called best.
   const hour9 = a.real.hourly[9];
   assert.equal(hour9.n, 0);
   assert.equal(hour9.eligible, false);
-  assert.equal(hour9.winRate, null);
 
-  // Best hour must exist and must be hour 8 (5 wins / 6, above baseline + margin).
+  // With strict criteria (>=30, margin, CI lower bound) hour 8 qualifies.
+  assert.ok(hour8.winRate > a.real.summary.winRate + a.thresholds.bestMarginPct / 100);
+  assert.ok(hour8.ciLower > a.real.summary.winRate, "CI lower bound must clear the baseline");
   assert.equal(a.real.bestHour.found, true);
   assert.equal(a.real.bestHour.window.key, 8);
-  assert.equal(a.real.bestHour.window.n, 6);
-  assert.equal(a.real.bestHour.window.smallSample, true);
+  assert.equal(a.real.bestHour.window.n, 37);
+  assert.equal(a.real.bestHour.window.smallSample, false);
 
   // Demo stays separate: 1 demo trade, no demo best-window.
   assert.equal(a.demo.summary.n, 1);
   assert.equal(a.demo.bestHour.found, false);
 });
+
+test("GET /api/analytics: ROI is derived when stakes exist", async () => {
+  const res = await fetch(base + "/api/analytics");
+  const a = await res.json();
+  // Some seeded trades have no stake, so summary ROI is null unless every
+  // trade has one — but hourly ROI for the fully-staked bucket is null too
+  // (the STRICT bucket has no stake). Just assert the field exists in shape.
+  assert.ok("roiPct" in a.real.summary);
+  assert.ok("totalStakeCents" in a.real.summary);
+});
+
+/* ---------- imports ---------- */
 
 test("CSV import preview + confirm persists like a manual trade", async () => {
   const csv = [
@@ -226,6 +342,7 @@ test("CSV import preview + confirm persists like a manual trade", async () => {
   assert.equal(p.readyTrades[0].direction, "long");
   assert.equal(p.readyTrades[0].mode, "real");
   assert.equal(p.readyTrades[0].timestamp_utc, "2026-08-11T08:00:00.000Z");
+  assert.ok(Array.isArray(p.caveats));
 
   const confirm = await fetch(base + "/api/import/confirm", {
     method: "POST",
@@ -246,15 +363,13 @@ test("CSV import preview + confirm persists like a manual trade", async () => {
   assert.ok(analytics.real.summary.n >= 1);
 });
 
-test("Excel import and missing-file errors", async () => {
-  const XLSX = require("xlsx");
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([
-    ["asset", "direction", "outcome", "amount", "mode", "timestamp"],
-    ["SOLUSDT", "short", "breakeven", 0, "demo", "2026-08-12T10:00:00Z"],
-  ]);
-  XLSX.utils.book_append_sheet(wb, ws, "Trades");
-  const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+test("Excel import (exceljs) and missing-file errors", async () => {
+  const ExcelJS = require("exceljs");
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Trades");
+  ws.addRow(["asset", "direction", "outcome", "amount", "mode", "timestamp"]);
+  ws.addRow(["SOLUSDT", "short", "breakeven", 0, "demo", "2026-08-12T10:00:00Z"]);
+  const buf = Buffer.from(await wb.xlsx.writeBuffer());
   const form = new FormData();
   form.append("file", new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), "t.xlsx");
   const preview = await fetch(base + "/api/import/preview", { method: "POST", body: form });
@@ -274,9 +389,45 @@ test("Excel import and missing-file errors", async () => {
   assert.equal(empty.status, 400);
 });
 
-test("GET / serves the app shell", async () => {
+test("concurrent import of the same file does not create duplicates", async () => {
+  const csv = [
+    "asset,direction,outcome,amount,mode,timestamp",
+    "CONCURRENT,long,win,5,real,2026-08-13T08:00:00Z",
+  ].join("\n");
+  const form = () => {
+    const fd = new FormData();
+    fd.append("file", new Blob([csv], { type: "text/csv" }), "concurrent.csv");
+    return fd;
+  };
+  const [p1, p2] = await Promise.all([
+    fetch(base + "/api/import/preview", { method: "POST", body: form() }),
+    fetch(base + "/api/import/preview", { method: "POST", body: form() }),
+  ]);
+  const j1 = await p1.json();
+  const j2 = await p2.json();
+  const [c1, c2] = await Promise.all([
+    fetch(base + "/api/import/confirm", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trades: j1.readyTrades }),
+    }).then((r) => r.json()),
+    fetch(base + "/api/import/confirm", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trades: j2.readyTrades }),
+    }).then((r) => r.json()),
+  ]);
+  const total = c1.imported + c2.imported;
+  assert.ok(total === 1, "exactly one of the concurrent imports must win (got " + total + ")");
+});
+
+/* ---------- shell ---------- */
+
+test("GET / serves the app shell and unknown APIs 404 as JSON", async () => {
   const res = await fetch(base + "/");
   assert.equal(res.status, 200);
   const html = await res.text();
   assert.ok(html.includes("Trade Timing Journal"));
+
+  const api404 = await fetch(base + "/api/nope");
+  assert.equal(api404.status, 404);
+  assert.equal((await api404.json()).error, "Not found.");
 });

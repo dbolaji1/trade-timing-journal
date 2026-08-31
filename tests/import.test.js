@@ -1,19 +1,24 @@
 /**
- * Unit tests for CSV/Excel mapping, call/put aliases, and duplicate keys.
+ * Unit tests for CSV/Excel mapping, call/put aliases, duplicate keys,
+ * mapping caveats, and the xlsx-file parser (exceljs).
  */
 "use strict";
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const XLSX = require("xlsx");
+const ExcelJS = require("exceljs");
 const {
   mapColumns,
+  mappingCaveats,
   normalizeDirection,
   normalizeOutcome,
   normalizeMode,
   identityKey,
+  brokerKey,
+  dedupeKeys,
   classifyRows,
   parseWorkbook,
+  parseCsvText,
 } = require("../import");
 
 test("maps common header aliases including call/put", () => {
@@ -25,6 +30,13 @@ test("maps common header aliases including call/put", () => {
   assert.equal(mapping.mode, "Account");
   assert.equal(mapping.timestamp, "Open Time");
   assert.equal(mapping.notes, "Notes");
+});
+
+test("mapping prefers net P&L over bare 'amount'", () => {
+  // A Pocket Option-style export: Income/Payout/Amount/Profit.
+  const mapping = mapColumns(["ID", "Opened", "Asset", "Action", "Amount", "Income", "Profit"]);
+  assert.equal(mapping.amount, "Profit");
+  assert.equal(mapping.stake, "Amount");
 });
 
 test("call/put and buy/sell normalize to long/short", () => {
@@ -58,48 +70,116 @@ test("classifyRows flags invalid, file duplicates, and journal duplicates", () =
     { ...good, asset: "GBPUSD" }, // new
     { asset: "", direction: "call", outcome: "win", amount: 1, mode: "real", timestamp: "2026-08-10T07:12:00Z" },
   ];
-  const existingKey = identityKey({
+  // Existing keys are the prefixed dedupe keys (as produced by
+  // existingIdentitySet in import.js / server.js).
+  const existingKeys = new Set(dedupeKeys({
     asset: "GBPUSD",
     direction: "long",
     outcome: "win",
     pnl_cents: 1250,
     mode: "real",
     timestamp_utc: "2026-08-10T07:12:00.000Z",
-  });
-  const result = classifyRows(rows, mapping, new Set([existingKey]));
+  }));
+  const result = classifyRows(rows, mapping, existingKeys);
   assert.equal(result.counts.ready, 1);
   assert.equal(result.counts.duplicates_in_file, 1);
   assert.equal(result.counts.duplicates_in_journal, 1);
   assert.equal(result.counts.invalid, 1);
 });
 
-test("parseWorkbook reads CSV and xlsx", () => {
+test("duplicate keys: broker + broker_trade_id takes priority over fingerprint", () => {
+  const withBroker = {
+    asset: "EURUSD", direction: "long", outcome: "win", pnl_cents: 1250,
+    mode: "real", timestamp_utc: "2026-08-10T07:12:00.000Z",
+    broker: "Pocket Option", broker_trade_id: "107352634",
+  };
+  const corrected = {
+    ...withBroker,
+    pnl_cents: 1251, // corrected P&L — same broker trade
+    timestamp_utc: "2026-08-10T07:12:01.000Z", // reformatted timestamp
+  };
+  const b1 = brokerKey(withBroker);
+  const b2 = brokerKey(corrected);
+  assert.ok(b1 && b2);
+  assert.equal(b1, b2, "broker key must ignore corrected fields");
+  assert.notEqual(dedupeKeys(withBroker).join(), dedupeKeys(corrected).join(), "fingerprint differs");
+
+  // A row WITHOUT broker/trade id falls back to the fingerprint only.
+  const plain = { ...withBroker, broker: null, broker_trade_id: null };
+  assert.deepEqual(dedupeKeys(plain), ["f:" + identityKey(plain)]);
+});
+
+test("classifyRows: broker-ID duplicate is detected even when P&L changed", () => {
+  const headers = ["asset", "direction", "outcome", "amount", "mode", "timestamp", "ID"];
+  const mapping = mapColumns(headers);
+  assert.equal(mapping.broker_trade_id, "ID");
+  const rows = [
+    { asset: "BTCUSDT", direction: "call", outcome: "win", amount: 10, mode: "real", timestamp: "2026-08-10T07:12:00Z", ID: "999" },
+    { asset: "BTCUSDT", direction: "call", outcome: "win", amount: 12.75, mode: "real", timestamp: "2026-08-10T07:13:00Z", ID: "999" },
+  ];
+  // existing DB contains the same broker trade id but with yet another P&L value.
+  const dbKey = dedupeKeys({
+    asset: "BTCUSDT", direction: "long", outcome: "win", pnl_cents: 100,
+    mode: "real", timestamp_utc: "2026-08-10T07:12:00.000Z",
+    broker: null, broker_trade_id: "999",
+  });
+  const result = classifyRows(rows, mapping, new Set(dbKey));
+  assert.equal(result.counts.ready, 0);
+  assert.equal(result.counts.duplicates_in_journal, 1);
+  assert.equal(result.counts.duplicates_in_file, 1);
+});
+
+test("mapping caveats warn about ambiguous amount columns", () => {
+  const mapping = mapColumns(["Symbol", "Action", "Result", "Payout", "Account", "Open Time"]);
+  assert.equal(mapping.amount, "Payout");
+  const caveats = mappingCaveats(mapping);
+  assert.ok(caveats.length > 0);
+  assert.ok(caveats[0].includes("Payout"));
+});
+test("mapping caveats are empty for unambiguous headers", () => {
+  const mapping = mapColumns(["symbol", "direction", "outcome", "profit", "mode", "timestamp"]);
+  assert.deepEqual(mappingCaveats(mapping), []);
+});
+
+test("parseWorkbook reads CSV (with quotes, semicolons, CRLF) and xlsx", async () => {
   const csv = Buffer.from(
-    "asset,direction,outcome,amount,mode,timestamp\nBTCUSDT,long,win,10,real,2026-08-10T07:12:00Z\n",
+    'asset,direction,outcome,amount,mode,timestamp\r\n"BTC,USDT",long,win,10,real,2026-08-10T07:12:00Z\r\n',
     "utf8"
   );
-  const csvParsed = parseWorkbook(csv, "trades.csv", "text/csv");
+  const csvParsed = await parseWorkbook(csv, "trades.csv", "text/csv");
   assert.equal(csvParsed.kind, "csv");
   assert.equal(csvParsed.rows.length, 1);
+  assert.equal(csvParsed.rows[0].asset, "BTC,USDT");
 
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([
-    ["asset", "direction", "outcome", "amount", "mode", "timestamp"],
-    ["ETHUSD", "put", "loss", 8, "demo", "2026-08-10T09:00:00Z"],
-  ]);
-  XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
-  const xbuf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
-  const xl = parseWorkbook(xbuf, "trades.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Sheet1");
+  ws.addRow(["asset", "direction", "outcome", "amount", "mode", "timestamp"]);
+  ws.addRow(["ETHUSD", "put", "loss", 8, "demo", "2026-08-10T09:00:00Z"]);
+  const xbuf = Buffer.from(await wb.xlsx.writeBuffer());
+  const xl = await parseWorkbook(xbuf, "trades.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   assert.equal(xl.kind, "excel");
   assert.equal(xl.rows.length, 1);
+  assert.equal(xl.rows[0].asset, "ETHUSD");
 });
 
-test("rejects unsupported and empty files", () => {
-  assert.throws(() => parseWorkbook(Buffer.from("hi"), "notes.txt", "text/plain"), /Unsupported|empty/i);
-  assert.throws(() => parseWorkbook(Buffer.from([]), "a.csv", "text/csv"), /empty/i);
+test("parseWorkbook treats legacy .xls as unsupported", async () => {
+  await assert.rejects(
+    () => parseWorkbook(Buffer.from("not really xls"), "trades.xls", "application/vnd.ms-excel"),
+    /Unsupported/
+  );
 });
 
-test("Pocket Option-style export infers outcome from Profit and mode from filename", () => {
+test("rejects unsupported and empty files", async () => {
+  await assert.rejects(() => parseWorkbook(Buffer.from("hi"), "notes.txt", "text/plain"), /Unsupported|empty/i);
+  await assert.rejects(() => parseWorkbook(Buffer.from([]), "a.csv", "text/csv"), /empty/i);
+});
+
+test("parseCsvText handles quoted commas and escaped quotes", () => {
+  const rows = parseCsvText('a,"b,c",d\n"x ""y""",z,w\n', ",");
+  assert.deepEqual(rows, [["a", "b,c", "d"], ['x "y"', "z", "w"]]);
+});
+
+test("Pocket Option-style export infers outcome, mode, stake and naive TZ", async () => {
   const csv = Buffer.from(
     [
       "ID,Opened,Asset,Action,Amount,Income,Profit",
@@ -109,12 +189,14 @@ test("Pocket Option-style export infers outcome from Profit and mode from filena
     ].join("\n"),
     "utf8"
   );
-  const parsed = parseWorkbook(csv, "export_demo_history_107352634.csv", "text/csv");
+  const parsed = await parseWorkbook(csv, "export_demo_history_107352634.csv", "text/csv");
   const mapping = mapColumns(parsed.headers);
   assert.equal(mapping.asset, "Asset");
   assert.equal(mapping.direction, "Action");
   assert.equal(mapping.amount, "Profit");
+  assert.equal(mapping.stake, "Amount");
   assert.equal(mapping.timestamp, "Opened");
+  assert.equal(mapping.broker_trade_id, "ID");
 
   const result = classifyRows(parsed.rows, mapping, new Set(), {
     filename: "export_demo_history_107352634.csv",
@@ -124,6 +206,8 @@ test("Pocket Option-style export infers outcome from Profit and mode from filena
   assert.equal(result.rows[0].sanitized.direction, "long");
   assert.equal(result.rows[0].sanitized.outcome, "win");
   assert.equal(result.rows[0].sanitized.mode, "demo");
+  assert.equal(result.rows[0].sanitized.stake_cents, 1000);
+  assert.equal(result.rows[0].sanitized.broker_trade_id, "1");
   assert.equal(result.rows[1].sanitized.direction, "short");
   assert.equal(result.rows[1].sanitized.outcome, "loss");
   assert.equal(result.rows[2].sanitized.outcome, "breakeven");

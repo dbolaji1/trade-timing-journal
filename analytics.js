@@ -1,17 +1,27 @@
 /**
- * Trade Timing Journal - Analytics engine (Session 3)
+ * Trade Timing Journal - Analytics engine
  *
  * Pure functions, no external statistics libraries.
  * Everything is computed from real trades stored in SQLite.
  *
  * Core rules (statistical honesty):
  *  - Real and demo trades are NEVER blended. Every computation happens
- *    per mode, with its own baseline and its own best-window callout.
+ *    per mode, with its own baseline and its own "strongest observed
+ *    window" callout.
  *  - Buckets with fewer than MIN_N trades show "Not enough data yet".
  *  - Win rates are always shown with Wilson 95% confidence intervals.
- *  - The best window is chosen by the LOWER BOUND of the Wilson interval,
- *    never by raw win rate.
+ *  - Win rate = wins / ALL trades of that mode (breakevens count in the
+ *    denominator).
+ *  - The "strongest observed window" requires a LOT of evidence, because
+ *    the dashboard tests ~31 buckets at once (24 hours + 7 weekdays) and
+ *    some of them will look good by chance alone (multiple comparisons):
+ *      a) at least BEST_MIN_N trades in the bucket (default 30),
+ *      b) win rate more than BEST_MARGIN above that mode's baseline,
+ *      c) the Wilson 95% LOWER bound clears the baseline too,
+ *    and the winner is ranked by the Wilson lower bound, never raw win rate.
  *  - Money math happens in integer cents; rounding happens only at display.
+ *  - ROI = total P&L / total stake (when stake data exists); comparing ROI
+ *    instead of raw P&L removes position-sizing history from the comparison.
  */
 "use strict";
 
@@ -98,7 +108,7 @@ function hourLabel(hour) {
   return String(hour).padStart(2, "0") + ":00";
 }
 
-function buildBucketStats(trades, dimension, timezone = CONFIG.TIMEZONE) {
+function buildBucketStats(trades, dimension, timezone = CONFIG.TIMEZONE, cfg = CONFIG.ANALYTICS) {
   const size = dimension === "hour" ? HOUR_COUNT : WEEKDAY_ORDER.length;
   const buckets = Array.from({ length: size }, (_, i) => ({
     key: i,
@@ -106,6 +116,7 @@ function buildBucketStats(trades, dimension, timezone = CONFIG.TIMEZONE) {
     n: 0,
     wins: 0,
     pnlCentsTotal: 0,
+    stakeCentsTotal: 0,
   }));
 
   for (const trade of trades) {
@@ -114,11 +125,16 @@ function buildBucketStats(trades, dimension, timezone = CONFIG.TIMEZONE) {
     bucket.n += 1;
     if (trade.outcome === "win") bucket.wins += 1;
     bucket.pnlCentsTotal += trade.pnl_cents;
+    if (trade.stake_cents) bucket.stakeCentsTotal += trade.stake_cents;
   }
 
   return buckets.map((bucket) => {
-    const eligible = bucket.n >= CONFIG.ANALYTICS.MIN_N;
-    const ci = eligible ? wilsonInterval(bucket.wins, bucket.n) : null;
+    const eligible = bucket.n >= cfg.MIN_N;
+    const ci = eligible ? wilsonInterval(bucket.wins, bucket.n, cfg.WILSON_Z) : null;
+    const roiPct =
+      eligible && bucket.stakeCentsTotal > 0
+        ? Math.round((10000 * bucket.pnlCentsTotal) / bucket.stakeCentsTotal) / 100
+        : null;
     return {
       key: bucket.key,
       label: bucket.label,
@@ -126,6 +142,8 @@ function buildBucketStats(trades, dimension, timezone = CONFIG.TIMEZONE) {
       wins: bucket.wins,
       winRate: eligible ? bucket.wins / bucket.n : null,
       expectancyCents: eligible ? Math.round(bucket.pnlCentsTotal / bucket.n) : null,
+      totalStakeCents: bucket.stakeCentsTotal,
+      roiPct,
       ciLower: ci ? ci.lower : null,
       ciUpper: ci ? ci.upper : null,
       eligible,
@@ -137,11 +155,16 @@ function buildBucketStats(trades, dimension, timezone = CONFIG.TIMEZONE) {
  * Overall summary for one mode
  * ============================================================ */
 
-function summarizeTrades(trades) {
+function summarizeTrades(trades, cfg = CONFIG.ANALYTICS) {
   const n = trades.length;
   const wins = trades.filter((t) => t.outcome === "win").length;
   const totalPnlCents = trades.reduce((acc, t) => acc + t.pnl_cents, 0);
-  const ci = n > 0 ? wilsonInterval(wins, n) : null;
+  const totalStakeCents = trades.reduce((acc, t) => acc + (t.stake_cents || 0), 0);
+  const ci = n > 0 ? wilsonInterval(wins, n, cfg.WILSON_Z) : null;
+  const roiPct =
+    n > 0 && totalStakeCents > 0
+      ? Math.round((10000 * totalPnlCents) / totalStakeCents) / 100
+      : null;
   return {
     n,
     wins,
@@ -150,29 +173,37 @@ function summarizeTrades(trades) {
     ciUpper: ci ? ci.upper : null,
     totalPnlCents,
     expectancyCents: n > 0 ? Math.round(totalPnlCents / n) : null,
-    smallSample: n > 0 && n < CONFIG.ANALYTICS.BEST_SMALL_SAMPLE_N,
+    totalStakeCents,
+    roiPct,
+    smallSample: n > 0 && n < cfg.BEST_SMALL_SAMPLE_N,
   };
 }
 
 /* ============================================================
- * Best-window selection
+ * "Strongest observed window" selection
  *
- * A bucket qualifies only if:
- *   1. It has at least BEST_MIN_N trades (default 5).
+ * A bucket qualifies ONLY if ALL of these hold:
+ *   1. It has at least BEST_MIN_N trades (default 30). This guards against
+ *      the multiple-comparisons problem: with 24 hours + 7 weekdays tested,
+ *      a small bucket can look great by chance alone.
  *   2. Its win rate EXCEEDS the mode's overall baseline by BEST_MARGIN
  *      (default 5 percentage points) — strict >, not >=.
- *   3. Among qualifying buckets, the winner is the one with the highest
- *      Wilson LOWER bound (tie-break: more trades, then higher win rate).
- *      Raw win rate alone is never used to pick the winner.
+ *   3. Its Wilson 95% LOWER bound also clears the baseline (configurable
+ *      with BEST_REQUIRE_CI_OVER_BASELINE), so the pattern is unlikely to be
+ *      noise even though the raw rate looks good.
+ * Among qualifying buckets, the winner has the highest Wilson LOWER bound
+ * (tie-break: more trades, then higher win rate).
  * ============================================================ */
 
-function pickBestWindow(buckets, summary) {
-  const cfg = CONFIG.ANALYTICS;
+function pickBestWindow(buckets, summary, cfg = CONFIG.ANALYTICS) {
   const baseline = summary.winRate === null ? 0 : summary.winRate;
 
-  const candidates = buckets.filter(
-    (b) => b.eligible && b.n >= cfg.BEST_MIN_N && b.winRate > baseline + cfg.BEST_MARGIN
-  );
+  const candidates = buckets.filter((b) => {
+    if (!b.eligible || b.n < cfg.BEST_MIN_N) return false;
+    if (!(b.winRate > baseline + cfg.BEST_MARGIN)) return false;
+    if (cfg.BEST_REQUIRE_CI_OVER_BASELINE && !(b.ciLower > baseline)) return false;
+    return true;
+  });
 
   candidates.sort(
     (a, b) =>
@@ -201,6 +232,7 @@ function pickBestWindow(buckets, summary) {
       ciLower: w.ciLower,
       ciUpper: w.ciUpper,
       expectancyCents: w.expectancyCents,
+      roiPct: w.roiPct,
       baselineWinRate: baseline,
       marginPct: cfg.BEST_MARGIN * 100,
       smallSample: w.n < cfg.BEST_SMALL_SAMPLE_N,
@@ -212,17 +244,17 @@ function pickBestWindow(buckets, summary) {
  * Full analytics for all trades, real and demo kept separate.
  * ============================================================ */
 
-function computeAnalytics(trades, timezone = CONFIG.TIMEZONE) {
+function computeAnalytics(trades, timezone = CONFIG.TIMEZONE, cfg = CONFIG.ANALYTICS) {
   const analyzeMode = (modeTrades) => {
-    const summary = summarizeTrades(modeTrades);
-    const hourly = buildBucketStats(modeTrades, "hour", timezone);
-    const weekday = buildBucketStats(modeTrades, "weekday", timezone);
+    const summary = summarizeTrades(modeTrades, cfg);
+    const hourly = buildBucketStats(modeTrades, "hour", timezone, cfg);
+    const weekday = buildBucketStats(modeTrades, "weekday", timezone, cfg);
     return {
       summary,
       hourly,
       weekday,
-      bestHour: pickBestWindow(hourly, summary),
-      bestWeekday: pickBestWindow(weekday, summary),
+      bestHour: pickBestWindow(hourly, summary, cfg),
+      bestWeekday: pickBestWindow(weekday, summary, cfg),
     };
   };
 
