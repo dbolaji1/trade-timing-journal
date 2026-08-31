@@ -525,3 +525,24 @@ test("computeAnalytics: today block is honest when there are no trades today", (
   assert.equal(a.real.today.summary.winRate, null);
   assert.equal(a.real.today.bestHour.found, false);
 });
+
+test("computeAnalytics: today.weekdayStats is the FULL weekday history (not just today)", () => {
+  const trades = [
+    // Today (Mon 2024-01-15) + a prior Monday (2024-01-08)
+    trade(lagosHour(8, 15, 10), "win", 100),
+    trade(lagosHour(8, 15, 20), "win", 100),
+    trade(lagosHour(8, 8, 10), "loss", -50),
+    trade(lagosHour(8, 8, 20), "loss", -50),
+    // Tuesday — must not be in the Monday stats
+    trade(lagosHour(8, 16, 10), "win", 999),
+  ];
+  const a = computeAnalytics(trades, "Africa/Lagos", CONFIG.ANALYTICS, { today: "2024-01-15" });
+  const t = a.real.today;
+
+  assert.equal(t.summary.n, 2, "today's own trades (2 on 2024-01-15)");
+  assert.equal(t.weekdayStats.n, 4, "ALL Monday trades across weeks");
+  assert.equal(t.weekdayStats.wins, 2);
+  assert.equal(t.weekdayStats.totalPnlCents, 100);
+  assert.equal(t.baseline.n, 4, "baseline mirrors the weekday history");
+  assert.equal(typeof t.weekdayStats.ciLower, "number");
+});

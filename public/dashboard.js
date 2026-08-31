@@ -129,27 +129,29 @@
 
   /* ---------- Today cards (the headline) ---------- */
 
-  // Summary rows for "today so far".
+  // Monday's FULL historical stats (all weeks), plus a small "today so far" line.
   function todaySummaryRows(mode) {
     const t = state.data[mode].today;
-    const s = t.summary;
+    const s = t.weekdayStats || t.baseline || { n: 0, winRate: null };
+    const todayS = t.summary || { n: 0 };
     const roiRow = s.roiPct === null || s.roiPct === undefined
       ? ""
       : '<div class="best-line"><span>ROI (of stake)</span><b>' + pctPoints(s.roiPct) + "</b></div>";
     const caveat = s.n > 0 && s.smallSample
-      ? '<p class="caveat">Small sample today (' + s.n + " < " +
-        state.data.thresholds.bestSmallSampleN + ") — today is still in progress.</p>"
-      : s.n === 0
-        ? '<p class="best-none">No ' + mode + " trades logged today yet.</p>"
-        : "";
+      ? '<p class="caveat">Small sample (' + s.n + " < " +
+        state.data.thresholds.todaySmallSampleN + " " + esc(t.weekdayFull) +
+        " trades) — treat as provisional.</p>"
+      : "";
     return (
       "<div>" +
-        '<div class="best-line"><span>Trades today</span><b>' + s.n + " (" + s.wins + " wins)</b></div>" +
-        '<div class="best-line"><span>Win rate today</span><b>' + pct(s.winRate) + "</b></div>" +
+        '<div class="best-line"><span>' + esc(t.weekdayFull) + " trades</span><b>" + s.n + " (" + s.wins + " wins)</b></div>" +
+        '<div class="best-line"><span>Win rate</span><b>' + pct(s.winRate) + "</b></div>" +
         '<div class="best-line"><span>95% CI</span><b>' + pct(s.ciLower) + " – " + pct(s.ciUpper) + "</b></div>" +
         '<div class="best-line"><span>Expectancy</span><b>' + usdCents(s.expectancyCents) + "</b></div>" +
-        '<div class="best-line"><span>P&amp;L today</span><b>' + usdCents(s.totalPnlCents) + "</b></div>" +
+        '<div class="best-line"><span>Total P&amp;L</span><b>' + usdCents(s.totalPnlCents) + "</b></div>" +
         roiRow +
+        '<p class="best-note faint">Today so far: ' + todayS.n + " trade" + (todayS.n === 1 ? "" : "s") +
+          " (" + pct(todayS.winRate) + " win rate).</p>" +
         caveat +
       "</div>"
     );
@@ -210,13 +212,20 @@
       ? '<p class="best-note" style="color:var(--amber)">Demo = practice data. It is analysed with its own baseline and never mixed into real statistics.</p>'
       : "";
     if (!t) return "";
+    const wStats = t.weekdayStats || {};
+    const noTrades = (!wStats.n || wStats.n === 0);
     return (
       '<div class="best-card ' + mode + ' today-card">' +
-        "<h3>Today — " + esc(t.weekdayFull) + ' (' + esc(t.date) + ') <span class="chip ' + chip + '">' + mode + "</span></h3>" +
-        '<p class="best-note faint">Focused on today (' + esc(t.weekdayFull) +
-          '). The "best time" below is based on your ' + esc(t.weekdayFull) + " trades across all weeks.</p>" +
+        "<h3>" + esc(t.weekdayFull) + ' — today (' + esc(t.date) + ') <span class="chip ' + chip + '">' + mode + "</span></h3>" +
+        '<p class="best-note faint">Every number below is your ' + esc(t.weekdayFull) +
+          " performance across ALL weeks — so it shows the trades you have on " + esc(t.weekdayFull) +
+          "s and the best time historically, even before you trade today.</p>" +
+        (noTrades
+          ? '<div class="best-none">No ' + esc(t.weekdayFull) + " trades logged yet — log a trade on a " +
+            esc(t.weekdayFull) + " and this card will fill in automatically.</div>"
+          : "") +
         demoNote +
-        '<div class="best-block"><h4>Today so far</h4>' + todaySummaryRows(mode) + "</div>" +
+        '<div class="best-block"><h4>' + esc(t.weekdayFull) + " — all time</h4>" + todaySummaryRows(mode) + "</div>" +
         '<div class="best-block"><h4>Best time to trade on ' + esc(t.weekdayFull) + "s</h4>" +
           todayBestHourBlock(mode, t) + "</div>" +
       "</div>"

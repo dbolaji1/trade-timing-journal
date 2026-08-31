@@ -290,7 +290,12 @@ function buildTodayBlock(modeTrades, today, timezone, cfg) {
     weekdayKey: WEEKDAY_INDEX[today.weekday],
     startIso: today.startIso,
     endIso: today.endIso,
+    // Today's own trades (0 until you log one today).
     summary: summarizeTrades(todayTrades, cfg),
+    // FULL historical stats for this weekday across every week (e.g. every
+    // Monday): the numbers the dashboard headline should show.
+    weekdayStats: weekdaySummary,
+    // Back-compat + used by the best-hour UI as its comparison baseline.
     baseline: {
       n: weekdaySummary.n,
       winRate: weekdaySummary.winRate,
