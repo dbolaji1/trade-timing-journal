@@ -1,25 +1,30 @@
 #!/usr/bin/env node
 /**
- * Tiny backup script for Trade Timing Journal
- * 
+ * Backup script for Trade Timing Journal
+ *
  * Usage:
  *   npm run backup
  *   node scripts/backup.js
  *   node scripts/backup.js --path ./my-backup.db
- * 
- * Copies the live SQLite database file to backups/ with a timestamp.
- * WAL files are checkpointed first so the backup is consistent.
+ *
+ * Uses SQLite's ONLINE BACKUP API (better-sqlite3 `db.backup()`), which is
+ * WAL-aware: the copy is taken from a consistent snapshot of the database,
+ * so it can never miss recent writes that are still sitting in the WAL file.
+ * The backup is then opened read-only and verified (integrity check + row
+ * count) before the script reports success.
  */
+"use strict";
+
 const fs = require("fs");
 const path = require("path");
 const CONFIG = require("../config");
 
-function backup() {
+async function backup() {
   const dbPath = path.resolve(CONFIG.DB_PATH);
   const backupsDir = path.resolve("./backups");
 
   // Parse custom path arg
-  const customArgIndex = process.argv.findIndex(a => a === "--path");
+  const customArgIndex = process.argv.findIndex((a) => a === "--path");
   const customPath = customArgIndex !== -1 ? process.argv[customArgIndex + 1] : null;
 
   if (!fs.existsSync(dbPath)) {
@@ -33,19 +38,6 @@ function backup() {
     console.log(`[Backup] Created backups directory: ${backupsDir}`);
   }
 
-  // Try to checkpoint WAL via better-sqlite3 if available
-  try {
-    const Database = require("better-sqlite3");
-    const db = new Database(dbPath, { readonly: false });
-    // Checkpoint WAL to main DB file so backup is complete
-    db.pragma("wal_checkpoint(TRUNCATE)");
-    db.close();
-    console.log("[Backup] WAL checkpoint completed.");
-  } catch (e) {
-    console.warn("[Backup] Could not checkpoint WAL (DB may be in use). Copying anyway...");
-    console.warn("         For a perfect backup, stop the server first. Warning:", e.message);
-  }
-
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const defaultDest = path.join(backupsDir, `trades-backup-${timestamp}.db`);
   const dest = customPath ? path.resolve(customPath) : defaultDest;
@@ -54,16 +46,54 @@ function backup() {
   const destDir = path.dirname(dest);
   if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
 
-  fs.copyFileSync(dbPath, dest);
+  const Database = require("better-sqlite3");
+
+  // Use the SQLite backup API: consistent snapshot even while the app runs.
+  const source = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    if (fs.existsSync(dest)) fs.rmSync(dest); // backup API refuses an existing file
+    await source.backup(dest);
+  } catch (e) {
+    source.close();
+    console.error(`[Backup] Backup API failed: ${e.message}`);
+    console.error("         Make sure the destination is writable and not locked.");
+    process.exit(1);
+  }
+  source.close();
+  console.log("[Backup] Online backup API completed (WAL-safe, consistent snapshot).");
+
+  // Verify the backup: integrity check + row count.
+  try {
+    const check = new Database(dest, { readonly: true });
+    const integrity = check.pragma("integrity_check", { simple: true });
+    let count = null;
+    try {
+      count = check.prepare("SELECT COUNT(*) AS c FROM trades").get().c;
+    } catch (e) {
+      count = "n/a (no trades table)";
+    }
+    check.close();
+    if (integrity !== "ok") {
+      console.error(`[Backup] VERIFICATION FAILED: integrity_check returned ${integrity}`);
+      process.exit(1);
+    }
+    console.log(`[Backup] Verified: integrity_check = ok, ${count} trade(s) in backup.`);
+  } catch (e) {
+    console.error(`[Backup] VERIFICATION FAILED: could not open the backup: ${e.message}`);
+    process.exit(1);
+  }
 
   const srcSize = fs.statSync(dbPath).size;
   const destSize = fs.statSync(dest).size;
 
   console.log(`\n✓ Backup complete!`);
-  console.log(`  Source: ${dbPath} (${(srcSize/1024).toFixed(1)} KB)`);
-  console.log(`  Backup: ${dest} (${(destSize/1024).toFixed(1)} KB)`);
+  console.log(`  Source: ${dbPath} (${(srcSize / 1024).toFixed(1)} KB)`);
+  console.log(`  Backup: ${dest} (${(destSize / 1024).toFixed(1)} KB)`);
   console.log(`\n  To restore: copy the backup file back to ${dbPath} while the server is stopped.`);
   console.log(`  Example: cp "${dest}" "${dbPath}"\n`);
 }
 
-backup();
+backup().catch((err) => {
+  console.error("[Backup] Unexpected error:", err);
+  process.exit(1);
+});

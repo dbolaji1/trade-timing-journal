@@ -63,10 +63,18 @@
 
         <div class="grid2">
           <div class="field">
-            <label for="amount">P&amp;L amount (USD) <span class="req" title="required">*</span></label>
+            <label for="amount">P&amp;L amount (<span id="currencyLabel">USD</span>) <span class="req" title="required">*</span></label>
             <input id="amount" name="amount" type="number" step="0.01" inputmode="decimal" placeholder="magnitude, e.g. 42.50" />
             <p class="micro" id="amountPreview">The sign is derived from Outcome: win = +, loss = −, breakeven = 0.</p>
           </div>
+          <div class="field">
+            <label for="stake">Stake <span class="opt">(optional, for ROI)</span></label>
+            <input id="stake" name="stake" type="number" step="0.01" inputmode="decimal" placeholder="e.g. 10.00 — how much you risked" />
+            <p class="micro" id="stakePreview">Optional. ROI % is derived from P&amp;L ÷ stake.</p>
+          </div>
+        </div>
+
+        <div class="grid2">
           <div class="field">
             <label>Mode <span class="req" title="required">*</span></label>
             <div class="seg">
@@ -78,7 +86,7 @@
         </div>
 
         <div class="field">
-          <label for="timestamp">Timestamp <span class="req" title="required">*</span></label>
+          <label for="timestamp">Timestamp (in <span id="tsTzLabel">…</span>) <span class="req" title="required">*</span></label>
           <div class="ts-row">
             <input id="timestamp" name="timestamp" type="datetime-local" />
             <button type="button" class="btn ghost" id="nowBtn">Now</button>
@@ -111,14 +119,44 @@
           <button class="pill" data-mode="demo" aria-pressed="false">Demo only</button>
         </div>
         <button class="btn ghost small" id="reloadBtn" title="Re-read the log from SQLite">↻ Reload from DB</button>
+        <a class="btn ghost small" id="exportBtn" href="#" title="Download the currently filtered trades as CSV">⬇ Export CSV</a>
         <button type="button" class="btn danger small" id="bulkDeleteBtn" disabled>Delete selected</button>
+      </div>
+
+      <div class="filter-bar">
+        <div class="field filter-field">
+          <label for="filterAsset">Asset</label>
+          <input id="filterAsset" type="text" placeholder="e.g. BTC" />
+        </div>
+        <div class="field filter-field">
+          <label for="filterOutcome">Outcome</label>
+          <select id="filterOutcome">
+            <option value="">All</option>
+            <option value="win">Win</option>
+            <option value="loss">Loss</option>
+            <option value="breakeven">Breakeven</option>
+          </select>
+        </div>
+        <div class="field filter-field">
+          <label for="filterFrom">From</label>
+          <input id="filterFrom" type="date" />
+        </div>
+        <div class="field filter-field">
+          <label for="filterTo">To</label>
+          <input id="filterTo" type="date" />
+        </div>
+        <div class="field filter-field filter-search">
+          <label for="filterQ">Search</label>
+          <input id="filterQ" type="search" placeholder="asset or notes" />
+        </div>
+        <button type="button" class="btn ghost" id="filterClearBtn" title="Clear all filters">Clear</button>
       </div>
 
       <p class="summary" id="logSummary">Loading…</p>
 
       <div class="import-bar" id="importBar">
         <label for="importFile" class="import-label">Import CSV / Excel</label>
-        <input id="importFile" name="file" type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+        <input id="importFile" name="file" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
         <button type="button" class="btn primary small" id="importPreviewBtn">Preview import</button>
         <span class="micro" id="importFileName"></span>
       </div>
@@ -135,14 +173,15 @@
               <th>Asset</th>
               <th>Dir</th>
               <th>Outcome</th>
-              <th>P&amp;L (USD)</th>
+              <th>P&amp;L (<span id="pnlCurrency">USD</span>)</th>
+              <th>Stake</th>
               <th>Mode</th>
               <th>Notes</th>
               <th class="actions-col">Actions</th>
             </tr>
           </thead>
           <tbody id="tradesBody">
-            <tr><td colspan="11" class="empty">Loading trades from SQLite…</td></tr>
+            <tr><td colspan="12" class="empty">Loading trades from SQLite…</td></tr>
           </tbody>
         </table>
       </div>
@@ -245,13 +284,15 @@
         <h2>How to read these numbers</h2>
         <ul>
           <li>All statistics are computed from the trades in <strong>SQLite</strong>, on the server, every time you load or reload this dashboard. Nothing here is hard-coded.</li>
+          <li><strong>The headline is focused on today.</strong> The "Today" card shows how the current day is going, and the "Best time to trade" comes from your trades on <strong>this weekday</strong> (e.g. all your Mondays) — so it answers "when should I trade today?" instead of pointing at a different best day each week.</li>
           <li><strong>Real and demo are always separate.</strong> They are never blended into one series, and each mode is compared against its own baseline.</li>
+          <li><strong>Win rate = wins ÷ ALL trades of that mode</strong> (breakevens count in the bottom of the fraction, so they pull the win rate down).</li>
           <li>A bucket needs at least <strong>3 trades</strong> before any statistics are shown — otherwise you see "Not enough data yet", never a blank space.</li>
-          <li>Win rates come with a <strong>95% Wilson confidence interval</strong>. Wide intervals mean few trades — treat those numbers with caution.</li>
-          <li><strong>Expectancy (average P&amp;L)</strong> is shown next to win rate: a high win rate does not automatically mean profitable.</li>
-          <li><strong>Best window</strong> = at least 5 trades of that mode, win rate more than 5 percentage points above that mode's baseline, ranked by the <em>lower bound</em> of the Wilson interval — not by raw win rate.</li>
-          <li>Samples under 30 trades are always flagged as small samples.</li>
-          <li>Timestamps are stored in UTC and bucketed in the fixed configured timezone (shown in the header).</li>
+          <li>Win rates come with a <strong>95% Wilson confidence interval</strong> — a range the true win rate is likely to sit in. Wide intervals mean few trades; treat those numbers with caution.</li>
+          <li><strong>Expectancy (average P&amp;L)</strong> is shown next to win rate: a high win rate does not automatically mean profitable. When you log stakes, <strong>ROI %</strong> (total P&amp;L ÷ total stake) is also shown, which removes position-size history from the comparison.</li>
+          <li><strong>"Best time today" is honest, not a promise.</strong> It requires at least <strong>5 trades on this weekday</strong>, a win rate more than 5 percentage points above that weekday's baseline, <em>and</em> a 95% confidence lower bound above that baseline. The card always states how many trades the hint is based on, and marks small samples.</li>
+          <li>Sample sizes under 30 trades are always flagged as provisional.</li>
+          <li>Timestamps are stored in UTC and bucketed in the fixed configured timezone (shown in the header); manual entry is interpreted in that same timezone.</li>
         </ul>
       </div>
 
@@ -269,8 +310,16 @@
   <!-- ================= Import preview modal ================= -->
   <div class="modal-backdrop" id="importModal" hidden>
     <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="importTitle">
-      <h3 id="importTitle">Import preview</h3>
+      <h3 id="importTitle">Import preview — confirm column mapping</h3>
       <p class="hint" id="importMapping"></p>
+      <div id="importCaveats" class="import-caveats" role="alert"></div>
+      <div id="mappingConfirm">
+        <h4>Is this mapping correct? You must confirm the columns mean what the importer guessed.</h4>
+        <label class="mapping-ok">
+          <input type="checkbox" id="mappingApproved" />
+          Yes, the mapped columns are correct — import the rows shown below.
+        </label>
+      </div>
       <div class="import-counts" id="importCounts"></div>
       <div class="tablewrap import-table">
         <table>
@@ -282,6 +331,7 @@
               <th>Dir</th>
               <th>Outcome</th>
               <th>P&amp;L</th>
+              <th>Stake</th>
               <th>Mode</th>
               <th>When (UTC)</th>
               <th>Notes / reason</th>
@@ -303,10 +353,11 @@
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="deleteTitle">
       <h3 id="deleteTitle">Delete this trade?</h3>
       <p id="deleteMessage"></p>
-      <p class="hint">This permanently removes the trade from the SQLite database. This cannot be undone.</p>
+      <div class="delete-preview" id="deletePreview" hidden></div>
+      <p class="hint">The trade is removed from SQLite, but an <strong>Undo</strong> toast appears for 30 seconds after deleting — it restores the exact same rows with the same IDs.</p>
       <div class="modal-actions">
         <button class="btn ghost" id="deleteCancel">Cancel</button>
-        <button class="btn danger" id="deleteConfirm">Delete permanently</button>
+        <button class="btn danger" id="deleteConfirm">Delete</button>
       </div>
     </div>
   </div>
@@ -315,7 +366,8 @@
   <div class="toasts" id="toasts" aria-live="polite"></div>
 
   <script src="vendor/chart.umd.js"></script>
-  <script src="app.js?v=import5"></script>
-  <script src="dashboard.js?v=import5"></script>
+  <script src="format.js?v=audit1"></script>
+  <script src="app.js?v=audit1"></script>
+  <script src="dashboard.js?v=audit1"></script>
 </body>
 </html>

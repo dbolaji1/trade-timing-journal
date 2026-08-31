@@ -2,11 +2,16 @@
  * Server-side validation - pure functions
  * All trade data is validated here before touching the database.
  */
+"use strict";
+
 const CONFIG = require("./config");
+const { parseTimestampToUtc } = require("./time");
 
 const ALLOWED_DIRECTIONS = ["long", "short"];
 const ALLOWED_OUTCOMES = ["win", "loss", "breakeven"];
 const ALLOWED_MODES = ["real", "demo"];
+const MAX_BROKER_LEN = 50;
+const MAX_BROKER_TRADE_ID_LEN = 100;
 
 /**
  * Normalize asset name: uppercase, strip separators ( - / _ . space )
@@ -31,6 +36,7 @@ function toCents(amount) {
  * Format integer cents back to display string: 12345 -> "123.45"
  */
 function formatCents(cents) {
+  if (cents === null || cents === undefined) return null;
   const sign = cents < 0 ? "-" : "";
   const abs = Math.abs(cents);
   const dollars = Math.floor(abs / 100);
@@ -64,6 +70,13 @@ function derivePnlSign(outcome, pnlCents) {
  * Validate and sanitize a trade payload.
  * Returns { valid: boolean, errors: string[], sanitized: object }
  * sanitized contains DB-ready values (asset normalized, pnl_cents, timestamp_utc)
+ *
+ * Timestamps:
+ *  - `timestamp` / `timestamp_utc` with an explicit offset (Z / ±hh:mm) is
+ *    stored as the exact instant it names.
+ *  - A NAIVE value (e.g. "2026-08-10T14:30") is interpreted as wall-clock
+ *    time in CONFIG.TIMEZONE — never in the server's or browser's locale —
+ *    so manual + imported entries land in the correct hour bucket.
  */
 function validateTrade(payload, options = { partial: false }) {
   const errors = [];
@@ -130,7 +143,10 @@ function validateTrade(payload, options = { partial: false }) {
   else if (payload.pnl_cents !== undefined) {
     // If pnl_cents is directly provided, validate it as integer
     const cents = payload.pnl_cents;
-    if (!Number.isInteger(cents)) {
+    if (cents === null) {
+      errors.push("pnl_cents cannot be null.");
+      rawAmount = null;
+    } else if (!Number.isInteger(cents)) {
       errors.push("pnl_cents must be an integer (cents).");
     } else if (!Number.isFinite(cents)) {
       errors.push("pnl_cents must be a finite number.");
@@ -166,16 +182,84 @@ function validateTrade(payload, options = { partial: false }) {
     }
   }
 
+  // --- stake (optional, magnitude; used for ROI) ---
+  const stakeProvided = payload.stake !== undefined || payload.stake_cents !== undefined;
+  if (!isPartial || stakeProvided) {
+    let rawStake = undefined;
+    if (payload.stake_cents !== undefined) {
+      const c = payload.stake_cents;
+      if (c === null) {
+        sanitized.stake_cents = null;
+      } else if (!Number.isInteger(c) || !Number.isFinite(c)) {
+        errors.push("stake_cents must be an integer (cents).");
+      } else if (Math.abs(c) > 100000000000) {
+        errors.push("stake_cents is too large.");
+      } else {
+        sanitized.stake_cents = c;
+      }
+    } else if (payload.stake !== undefined && payload.stake !== null && String(payload.stake).trim() !== "") {
+      rawStake = payload.stake;
+    } else if (!isPartial) {
+      sanitized.stake_cents = null;
+    }
+
+    if (rawStake !== undefined && rawStake !== null) {
+      const num = Number(rawStake);
+      if (!Number.isFinite(num)) {
+        errors.push("Stake must be a finite number (e.g., 10.00).");
+      } else if (Math.abs(num) > 1000000000) {
+        errors.push("Stake is too large (max 1,000,000,000).");
+      } else {
+        // Stake is a risk amount; store it as a positive magnitude in cents.
+        sanitized.stake_cents = Math.round(Math.abs(num) * 100);
+      }
+    }
+  } else if (!isPartial) {
+    sanitized.stake_cents = null;
+  }
+  if (stakeProvided && sanitized.stake_cents === undefined && errors.length === 0) {
+    // provided but blank in full mode -> null
+    if (!isPartial) sanitized.stake_cents = null;
+  }
+
+  // --- broker / broker_trade_id (optional, mostly for imports) ---
+  if (!isPartial || payload.broker !== undefined) {
+    const v = payload.broker;
+    if (v === undefined || v === null || String(v).trim() === "") {
+      if (!isPartial) sanitized.broker = null;
+    } else if (typeof v !== "string") {
+      errors.push("Broker must be a string.");
+    } else if (v.trim().length > MAX_BROKER_LEN) {
+      errors.push(`Broker must be ${MAX_BROKER_LEN} characters or fewer.`);
+    } else {
+      sanitized.broker = v.trim();
+    }
+  }
+
+  if (!isPartial || payload.broker_trade_id !== undefined) {
+    const v = payload.broker_trade_id;
+    if (v === undefined || v === null || String(v).trim() === "") {
+      if (!isPartial) sanitized.broker_trade_id = null;
+    } else if (typeof v !== "string") {
+      errors.push("Broker trade ID must be a string.");
+    } else if (v.trim().length > MAX_BROKER_TRADE_ID_LEN) {
+      errors.push(`Broker trade ID must be ${MAX_BROKER_TRADE_ID_LEN} characters or fewer.`);
+    } else {
+      sanitized.broker_trade_id = v.trim();
+    }
+  }
+
   // --- timestamp ---
   if (!isPartial || payload.timestamp !== undefined || payload.timestamp_utc !== undefined) {
     let rawTs = payload.timestamp_utc || payload.timestamp;
     if (!rawTs) {
       errors.push("Timestamp is required.");
     } else {
-      const d = new Date(rawTs);
-      if (isNaN(d.getTime())) {
-        errors.push("Timestamp must be a valid date/time (e.g., 2024-03-15T14:30 or ISO string).");
+      const utcIso = parseTimestampToUtc(rawTs, CONFIG.TIMEZONE);
+      if (!utcIso) {
+        errors.push("Timestamp must be a valid date/time (e.g., 2026-03-15T14:30 or ISO string).");
       } else {
+        const d = new Date(utcIso);
         // Plausible check
         if (d < CONFIG.MIN_TIMESTAMP) {
           errors.push(`Timestamp must be after ${CONFIG.MIN_TIMESTAMP.toISOString()} (year 2000).`);
@@ -185,7 +269,7 @@ function validateTrade(payload, options = { partial: false }) {
           errors.push("Timestamp cannot be more than 24 hours in the future.");
         }
         // Store as UTC ISO string
-        sanitized.timestamp_utc = d.toISOString();
+        sanitized.timestamp_utc = utcIso;
       }
     }
   }

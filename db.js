@@ -1,13 +1,19 @@
 /**
  * SQLite persistence layer - better-sqlite3
- * 
+ *
  * CRITICAL: Database file persists across restarts.
  * - File lives at CONFIG.DB_PATH (./data/trades.db)
  * - WAL mode for durability + concurrency
  * - Created ONLY if it does not already exist
  * - Migrations use schema_version table
  * - initDb() is safe to run on every server start without destroying data
+ *
+ * Trade IDs are stable identifiers: SQLite's AUTOINCREMENT assigns each new
+ * trade a number it has never used before, and IDs are NEVER renumbered.
+ * A deleted trade leaves a gap; that is intentional and safe.
  */
+"use strict";
+
 const fs = require("fs");
 const path = require("path");
 const Database = require("better-sqlite3");
@@ -55,7 +61,6 @@ function getDb() {
   `);
 
   runMigrations(db);
-  compactTradeIds(db);
 
   return db;
 }
@@ -84,6 +89,16 @@ const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp_utc);
       CREATE INDEX IF NOT EXISTS idx_trades_mode ON trades(mode);
       CREATE INDEX IF NOT EXISTS idx_trades_asset ON trades(asset);
+    `,
+  },
+  {
+    version: 2,
+    description: "Add stake, broker and broker trade id columns",
+    sql: `
+      ALTER TABLE trades ADD COLUMN stake_cents INTEGER;
+      ALTER TABLE trades ADD COLUMN broker TEXT;
+      ALTER TABLE trades ADD COLUMN broker_trade_id TEXT;
+      CREATE INDEX IF NOT EXISTS idx_trades_broker_trade ON trades(broker_trade_id);
     `,
   },
 ];
@@ -127,36 +142,6 @@ function runMigrations(database) {
   console.log(`[DB] Migrations complete. New version: ${pending[pending.length - 1].version}`);
 }
 
-/**
- * Keep trade numbers as 1..N with no gaps, and reset AUTOINCREMENT so the
- * next insert is N+1 (or 1 if the journal is empty).
- */
-function compactTradeIds(database) {
-  const stats = database.prepare("SELECT COUNT(*) AS c, COALESCE(MAX(id), 0) AS m FROM trades").get();
-  if (stats.c === 0) {
-    database.exec("DELETE FROM sqlite_sequence WHERE name = 'trades'");
-    return { compacted: false, count: 0 };
-  }
-  if (stats.m === stats.c) {
-    database.exec("DELETE FROM sqlite_sequence WHERE name = 'trades'");
-    database.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES ('trades', ?)").run(stats.c);
-    return { compacted: false, count: stats.c };
-  }
-
-  const ids = database.prepare("SELECT id FROM trades ORDER BY id ASC").all().map((r) => r.id);
-  const bump = database.prepare("UPDATE trades SET id = ? WHERE id = ?");
-  const run = database.transaction(() => {
-    const offset = stats.m + 1000000;
-    for (const id of ids) bump.run(id + offset, id);
-    ids.forEach((id, i) => bump.run(i + 1, id + offset));
-    database.exec("DELETE FROM sqlite_sequence WHERE name = 'trades'");
-    database.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES ('trades', ?)").run(ids.length);
-  });
-  run();
-  console.log(`[DB] Renumbered trades 1–${ids.length} (was max id ${stats.m}).`);
-  return { compacted: true, count: ids.length };
-}
-
 function closeDb() {
   if (db) {
     db.close();
@@ -165,4 +150,4 @@ function closeDb() {
   }
 }
 
-module.exports = { getDb, closeDb, ensureDataDir, compactTradeIds };
+module.exports = { getDb, closeDb, ensureDataDir };

@@ -1,16 +1,19 @@
 /* ============================================================
-   Trade Timing Journal — frontend logic (Session 2)
+   Trade Timing Journal — frontend logic
    Plain vanilla JavaScript, no frameworks.
 
    How data flows:
      form ──> POST/PUT /api/trades ──> validation.js ──> SQLite
-     log  <── GET /api/trades?mode=…  <── SQLite (never browser state)
+     log  <── GET /api/trades?filters…  <── SQLite (never browser state)
 
-   Timestamps:
-     - The datetime-local input shows YOUR wall-clock time.
-     - Before sending, we convert it to the exact same instant in UTC.
-     - The log displays times in the fixed, configured timezone
-       (from /api/health) plus the raw UTC value.
+   Timestamps (THE critical rule):
+     - The datetime-local input shows wall-clock time in the CONFIGURED
+       trading timezone (from /api/health), NOT the browser's timezone.
+     - We send the NAIVE value (e.g. "2026-08-10T14:30") to the server,
+       and the server interprets it in the configured timezone before
+       storing UTC. So a browser set to UTC+5 cannot silently move a
+       2pm Lagos trade into a different hour bucket.
+     - The log displays times in the same configured timezone.
    ============================================================ */
 
 "use strict";
@@ -21,7 +24,11 @@ const state = {
   filter: "all",       // "all" | "real" | "demo"
   editingId: null,     // trade id being edited, or null for new trade
   timezone: "Africa/Lagos", // filled from /api/health (fixed in config.js)
+  currency: "USD",
+  currencySymbol: "$",
   pendingDeleteIds: null,   // ids waiting in the delete confirmation modal
+  pendingDeleteRows: null,  // full rows waiting for confirm (for undo)
+  undoRows: null,           // deleted rows available for undo (30s)
   selectedIds: new Set(),
 };
 
@@ -37,11 +44,9 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-/* ---------- Money ---------- */
+/* ---------- Money (single shared implementation: public/format.js) ---------- */
 function usd(cents) {
-  const sign = cents < 0 ? "-" : "";
-  const abs = Math.abs(cents);
-  return sign + "$" + Math.floor(abs / 100).toLocaleString("en-US") + "." + String(abs % 100).padStart(2, "0");
+  return window.TT_FORMAT.usd(cents, state.currencySymbol);
 }
 
 // Client-side mirror of the server's derivePnlSign: the SIGN of the P&L comes
@@ -53,9 +58,30 @@ function deriveCentsFromOutcome(outcome, cents) {
   return cents;
 }
 
-/* ---------- Time helpers ---------- */
+/* ---------- Time helpers (all in the CONFIGURED timezone) ---------- */
 
-// Format a UTC ISO string in the configured fixed timezone.
+function tzParts(date, withSeconds) {
+  const opts = {
+    timeZone: state.timezone,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  };
+  if (withSeconds) opts.second = "2-digit";
+  const parts = new Intl.DateTimeFormat("en-GB", opts).formatToParts(date);
+  const get = (type) => (parts.find((p) => p.type === type) || {}).value || "";
+  return {
+    year: get("year"), month: get("month"), day: get("day"),
+    hour: get("hour"), minute: get("minute"), second: get("second"),
+  };
+}
+
+// "YYYY-MM-DDTHH:mm" wall clock in the configured TZ for a datetime-local input.
+function toTzInputValue(date) {
+  const p = tzParts(date, false);
+  return p.year + "-" + p.month + "-" + p.day + "T" + p.hour + ":" + p.minute;
+}
+
+// Format a UTC ISO string for display in the configured timezone.
 function fmtTz(utcIso) {
   try {
     return new Intl.DateTimeFormat("en-GB", {
@@ -77,31 +103,36 @@ function fmtUtc(utcIso) {
   return String(utcIso).replace("T", " ").replace(/\.\d{3}Z$/, "") + " UTC";
 }
 
-// Date -> value for a datetime-local input (browser-local wall time).
-function toLocalInputValue(date) {
-  const pad = (n) => String(n).padStart(2, "0");
-  return (
-    date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) +
-    "T" + pad(date.getHours()) + ":" + pad(date.getMinutes())
-  );
-}
-
 function setNow() {
-  $("timestamp").value = toLocalInputValue(new Date());
+  $("timestamp").value = toTzInputValue(new Date());
   updatePreviews();
 }
 
 /* ---------- Toasts & form errors ---------- */
-function toast(message, type) {
+function toast(message, type, opts) {
   const box = $("toasts");
   const el = document.createElement("div");
   el.className = "toast toast-" + (type || "info");
-  el.textContent = message;
+  const text = document.createElement("span");
+  text.textContent = message;
+  el.appendChild(text);
+  if (opts && opts.actionLabel) {
+    const btn = document.createElement("button");
+    btn.className = "toast-action";
+    btn.textContent = opts.actionLabel;
+    btn.addEventListener("click", () => {
+      if (opts.onAction) opts.onAction();
+      el.classList.add("leaving");
+      setTimeout(() => el.remove(), 350);
+    });
+    el.appendChild(btn);
+  }
   box.appendChild(el);
+  const lifetime = opts && opts.lifetime ? opts.lifetime : 4200;
   setTimeout(() => {
     el.classList.add("leaving");
     setTimeout(() => el.remove(), 350);
-  }, 4200);
+  }, lifetime);
 }
 
 function showErrors(list) {
@@ -122,13 +153,20 @@ async function loadHealth() {
     const res = await fetch("/api/health");
     const data = await res.json();
     state.timezone = data.timezone || "Africa/Lagos";
+    state.currency = data.currency || "USD";
+    state.currencySymbol = data.currency_symbol || "$";
     $("statusText").textContent =
       "online · " + data.trade_count + " trade" + (data.trade_count === 1 ? "" : "s") +
       " · schema v" + data.schema_version;
     $("statusDot").classList.add("online");
     $("tzBadge").textContent = "Timezone: " + state.timezone;
     $("tzTh").textContent = state.timezone;
+    $("tsTzLabel").textContent = state.timezone;
+    $("currencyLabel").textContent = state.currency;
+    $("pnlCurrency").textContent = state.currency;
     updatePreviews();
+    // Re-render the log with the correct timezone label.
+    if (state.trades.length) renderTrades();
   } catch (err) {
     $("statusText").textContent = "offline — cannot reach the server";
     $("statusDot").classList.remove("online");
@@ -136,14 +174,36 @@ async function loadHealth() {
 }
 
 /* ---------- Trade log ---------- */
+
+// Build the query string from the current filters.
+function currentFilterQuery() {
+  const p = new URLSearchParams();
+  p.set("mode", state.filter);
+  const asset = $("filterAsset").value.trim();
+  const outcome = $("filterOutcome").value;
+  const from = $("filterFrom").value;
+  const to = $("filterTo").value;
+  const q = $("filterQ").value.trim();
+  if (asset) p.set("asset", asset);
+  if (outcome) p.set("outcome", outcome);
+  if (from) p.set("from", from);
+  if (to) p.set("to", to);
+  if (q) p.set("q", q);
+  return p.toString();
+}
+
+function updateExportLink() {
+  $("exportBtn").href = "/api/trades/export.csv?" + currentFilterQuery();
+}
+
 async function loadTrades() {
   const tbody = $("tradesBody");
-  tbody.innerHTML = '<tr><td colspan="11" class="empty">Loading trades from SQLite…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="12" class="empty">Loading trades from SQLite…</td></tr>';
   try {
-    const res = await fetch("/api/trades?mode=" + state.filter);
+    const res = await fetch("/api/trades?" + currentFilterQuery());
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      tbody.innerHTML = '<tr><td colspan="11" class="empty">' +
+      tbody.innerHTML = '<tr><td colspan="12" class="empty">' +
         "Could not load trades: " + escapeHtml(data.error || "HTTP " + res.status) + "</td></tr>";
       return;
     }
@@ -154,8 +214,10 @@ async function loadTrades() {
     renderSummary();
     updateBulkUi();
   } catch (err) {
-    tbody.innerHTML = '<tr><td colspan="11" class="empty">' +
+    tbody.innerHTML = '<tr><td colspan="12" class="empty">' +
       "Network error — is the server running? (" + escapeHtml(err.message) + ")</td></tr>";
+  } finally {
+    updateExportLink();
   }
 }
 
@@ -166,6 +228,9 @@ function rowHtml(t) {
   const notesCell = t.notes
     ? escapeHtml(t.notes)
     : '<span class="faint">—</span>';
+  const stakeText = t.stake_cents === null || t.stake_cents === undefined
+    ? '<span class="faint">—</span>'
+    : escapeHtml(usd(t.stake_cents));
   const checked = state.selectedIds.has(t.id) ? " checked" : "";
   return (
     '<tr data-id="' + t.id + '">' +
@@ -177,6 +242,7 @@ function rowHtml(t) {
       '<td><span class="dir dir-' + t.direction + '">' + dirLabel + "</span></td>" +
       '<td><span class="chip chip-' + t.outcome + '">' + escapeHtml(t.outcome) + "</span></td>" +
       '<td class="nowrap ' + pnlClass + '">' + pnlText + "</td>" +
+      "<td>" + stakeText + "</td>" +
       '<td><span class="chip chip-' + t.mode + '">' + escapeHtml(t.mode) + "</span></td>" +
       '<td class="notes" title="' + escapeHtml(t.notes || "") + '">' + notesCell + "</td>" +
       '<td class="nowrap actions">' +
@@ -191,11 +257,11 @@ function renderTrades() {
   const tbody = $("tradesBody");
   if (state.trades.length === 0) {
     const messages = {
-      all: "No trades yet. Add your first trade with the form — it will be saved permanently to SQLite.",
+      all: "No trades match these filters. Add your first trade with the form — it will be saved permanently to SQLite.",
       real: "No real trades here. Real and demo are always kept separate — try the Both or Demo filter.",
       demo: "No demo trades here. Real and demo are always kept separate — try the Both or Real filter.",
     };
-    tbody.innerHTML = '<tr><td colspan="11" class="empty">' + messages[state.filter] + "</td></tr>";
+    tbody.innerHTML = '<tr><td colspan="12" class="empty">' + (messages[state.filter] || messages.all) + "</td></tr>";
     $("logSummary").textContent = "";
     updateBulkUi();
     return;
@@ -259,8 +325,7 @@ function updatePreviews() {
     assetPreview.textContent = "";
   }
 
-  // Amount: show integer-cent conversion. The sign is derived from Outcome,
-  // so a win is always positive, a loss always negative, breakeven = 0.
+  // Amount: show integer-cent conversion and the outcome-derived sign.
   const rawAmount = $("amount").value;
   const outcome = $("outcome").value;
   const amountPreview = $("amountPreview");
@@ -275,19 +340,25 @@ function updatePreviews() {
     amountPreview.textContent = "The sign is derived from Outcome: win = +, loss = −, breakeven = 0.";
   }
 
-  // Timestamp: show exactly what gets stored in UTC and how it displays.
+  // Stake preview.
+  const rawStake = $("stake").value;
+  const stakePreview = $("stakePreview");
+  if (rawStake !== "" && Number.isFinite(Number(rawStake))) {
+    const cents = Math.round(Math.abs(Number(rawStake)) * 100);
+    stakePreview.textContent = "Stored as " + cents + " cents (" + state.currencySymbol + (cents / 100).toFixed(2) + "). ROI uses P&L ÷ stake.";
+  } else {
+    stakePreview.textContent = "Optional. ROI % is derived from P&L ÷ stake.";
+  }
+
+  // Timestamp: interpreted in the CONFIGURED timezone, then stored as UTC.
   const localValue = $("timestamp").value;
   const tsPreview = $("tsPreview");
   if (localValue) {
-    const d = new Date(localValue);
-    if (!isNaN(d.getTime())) {
-      tsPreview.textContent =
-        "Stored in UTC as: " + d.toISOString() +
-        " · shown in " + state.timezone + " as: " + fmtTz(d.toISOString());
-      return;
-    }
+    tsPreview.textContent =
+      "Interpreted as " + state.timezone + " wall time and stored in UTC — filled automatically with the current time in " + state.timezone + ".";
+  } else {
+    tsPreview.textContent = "Pick a date and time in " + state.timezone + " — it is stored in UTC and displayed in " + state.timezone + ".";
   }
-  tsPreview.textContent = "Pick a date and time — it is stored in UTC and displayed in " + state.timezone + ".";
 }
 
 /* ---------- Create / update ---------- */
@@ -312,8 +383,9 @@ async function submitTrade(event) {
     return;
   }
 
-  // datetime-local holds browser-local wall time; convert to the exact
-  // instant in UTC before sending, so the server stores true UTC.
+  // datetime-local holds wall-clock time in the CONFIGURED timezone. Send the
+  // NAIVE value; the server interprets it in CONFIG.TIMEZONE (never the
+  // browser's timezone) before storing UTC.
   const payload = {
     asset: asset,
     direction: $("direction").value,
@@ -321,8 +393,10 @@ async function submitTrade(event) {
     amount: rawAmount,
     mode: document.querySelector('input[name="mode"]:checked').value,
     notes: $("notes").value,
-    timestamp: new Date(localValue).toISOString(),
+    timestamp: localValue,
   };
+  const stakeVal = $("stake").value;
+  if (stakeVal !== "") payload.stake = stakeVal;
 
   const isEdit = state.editingId !== null;
   const url = isEdit ? "/api/trades/" + state.editingId : "/api/trades";
@@ -357,9 +431,10 @@ function startEdit(id) {
   $("direction").value = t.direction;
   $("outcome").value = t.outcome;
   $("amount").value = t.amount;
+  $("stake").value = t.stake === null || t.stake === undefined ? "" : t.stake;
   document.querySelector('input[name="mode"][value="' + t.mode + '"]').checked = true;
   $("notes").value = t.notes || "";
-  $("timestamp").value = toLocalInputValue(new Date(t.timestamp_utc));
+  $("timestamp").value = toTzInputValue(new Date(t.timestamp_utc));
   $("formTitle").textContent = "Edit Trade #" + id;
   $("saveBtn").textContent = "Update Trade";
   $("cancelEditBtn").hidden = false;
@@ -391,11 +466,12 @@ function resetForm() {
   setNow();
 }
 
-/* ---------- Delete ---------- */
+/* ---------- Delete (with preview + undo) ---------- */
 function askDelete(id) {
   const t = state.trades.find((x) => x.id === id);
   if (!t) return;
   state.pendingDeleteIds = [id];
+  state.pendingDeleteRows = [t];
   const title = $("deleteTitle");
   if (title) title.textContent = "Delete this trade?";
   const msg = $("deleteMessage");
@@ -405,6 +481,8 @@ function askDelete(id) {
   strong.textContent = "$" + t.pnl_formatted;
   msg.appendChild(strong);
   msg.appendChild(document.createTextNode("."));
+  $("deletePreview").hidden = true;
+  $("deletePreview").innerHTML = "";
   $("deleteModal").hidden = false;
   $("deleteConfirm").focus();
 }
@@ -415,13 +493,25 @@ function askBulkDelete() {
     toast("Select at least one trade first (or use the checkbox in the header to select all).", "info");
     return;
   }
+  const rows = state.trades.filter((t) => ids.includes(t.id));
   state.pendingDeleteIds = ids;
+  state.pendingDeleteRows = rows;
   const title = $("deleteTitle");
   if (title) title.textContent = "Delete " + ids.length + " trade" + (ids.length === 1 ? "" : "s") + "?";
   $("deleteMessage").textContent =
     "You are about to permanently remove " + ids.length +
-    " selected trade" + (ids.length === 1 ? "" : "s") +
-    " from SQLite. This cannot be undone.";
+    " selected trade" + (ids.length === 1 ? "" : "s") + " from SQLite. Review them below:";
+
+  // Preview: show up to 12 of the actual trades about to be removed.
+  const preview = $("deletePreview");
+  const shown = rows.slice(0, 12);
+  preview.innerHTML = shown.map((t) =>
+    "<div><strong>#" + t.id + "</strong> " + escapeHtml(t.asset) + " " +
+    escapeHtml(t.direction) + " " + escapeHtml(t.outcome) + " (" + escapeHtml(t.mode) +
+    ") · " + escapeHtml(t.pnl_formatted) + "</div>"
+  ).join("") + (rows.length > 12 ? "<div class='faint'>… and " + (rows.length - 12) + " more.</div>" : "");
+  preview.hidden = false;
+
   $("deleteModal").hidden = false;
   $("deleteConfirm").focus();
 }
@@ -429,26 +519,43 @@ function askBulkDelete() {
 function closeDeleteModal() {
   $("deleteModal").hidden = true;
   state.pendingDeleteIds = null;
+  state.pendingDeleteRows = null;
 }
 
 async function confirmDelete() {
   const ids = state.pendingDeleteIds;
+  const rows = state.pendingDeleteRows;
   if (!ids || !ids.length) return;
   $("deleteConfirm").disabled = true;
   try {
-    const res = ids.length === 1
-      ? await fetch("/api/trades/" + ids[0], { method: "DELETE" })
-      : await fetch("/api/trades/bulk-delete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ids: ids }),
-        });
-    const data = await res.json().catch(() => ({}));
+    let data;
+    let res;
+    if (ids.length === 1) {
+      res = await fetch("/api/trades/" + ids[0], { method: "DELETE" });
+      data = await res.json().catch(() => ({}));
+    } else {
+      res = await fetch("/api/trades/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: ids }),
+      });
+      data = await res.json().catch(() => ({}));
+    }
     if (!res.ok) {
       toast("Delete failed: " + (data.error || "HTTP " + res.status), "error");
     } else {
       const n = ids.length === 1 ? 1 : (data.deleted || ids.length);
-      toast("Deleted " + n + " trade" + (n === 1 ? "" : "s") + " from SQLite", "ok");
+      // Keep the deleted rows for a 30-second undo window.
+      const deletedRows = ids.length === 1
+        ? (data.deleted_row ? [data.deleted_row] : (rows || []))
+        : (data.deleted_rows || rows || []);
+      state.undoRows = deletedRows;
+      setTimeout(() => { state.undoRows = null; }, 30000);
+      toast("Deleted " + n + " trade" + (n === 1 ? "" : "s") + " from SQLite", "ok", {
+        actionLabel: "Undo",
+        lifetime: 30000,
+        onAction: () => undoDelete(),
+      });
       if (ids.includes(state.editingId)) resetForm();
       state.selectedIds = new Set();
       await refreshAll();
@@ -461,12 +568,38 @@ async function confirmDelete() {
   }
 }
 
+async function undoDelete() {
+  const rows = state.undoRows;
+  if (!rows || !rows.length) {
+    toast("Nothing to undo anymore (the 30-second window has passed).", "info");
+    return;
+  }
+  try {
+    const res = await fetch("/api/trades/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trades: rows }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast("Undo failed: " + (data.error || "HTTP " + res.status), "error");
+      return;
+    }
+    toast("Restored " + data.restored + " trade" + (data.restored === 1 ? "" : "s") + " with their original IDs.", "ok");
+    state.undoRows = null;
+    await refreshAll();
+  } catch (err) {
+    toast("Network error — is the server running? (" + err.message + ")", "error");
+  }
+}
+
 /* ---------- Misc ---------- */
 function fillExample() {
   $("asset").value = "btc/usdt";
   $("direction").value = "long";
   $("outcome").value = "win";
   $("amount").value = "42.50";
+  $("stake").value = "50.00";
   document.querySelector('input[name="mode"][value="real"]').checked = true;
   $("notes").value = "Example entry — breakout with volume.";
   setNow();
@@ -505,6 +638,8 @@ function resetImport() {
   $("importBody").innerHTML = "";
   $("importCounts").innerHTML = "";
   $("importMapping").textContent = "";
+  $("importCaveats").innerHTML = "";
+  $("mappingApproved").checked = false;
   $("importTruncated").hidden = true;
   hideImportErrors();
   closeImportModal();
@@ -548,9 +683,16 @@ async function previewImport(event) {
     }
     $("importMapping").textContent = mapText;
 
+    // MAPPING CONFIRMATION: show caveats (e.g. "Payout" may be gross) and
+    // require an explicit checkbox before Import is enabled.
+    const caveats = Array.isArray(data.caveats) ? data.caveats : [];
+    $("importCaveats").innerHTML = caveats.map((c) => "<div>⚠ " + escapeHtml(c) + "</div>").join("");
+    $("importCaveats").hidden = caveats.length === 0;
+    $("mappingApproved").checked = false;
+
     const body = $("importBody");
     if (!data.rows || !data.rows.length) {
-      body.innerHTML = '<tr><td colspan="9" class="empty">No rows to show.</td></tr>';
+      body.innerHTML = '<tr><td colspan="10" class="empty">No rows to show.</td></tr>';
     } else {
       body.innerHTML = data.rows.map((r) => {
         const p = r.preview || {};
@@ -563,6 +705,7 @@ async function previewImport(event) {
             "<td>" + escapeHtml(p.direction || "—") + "</td>" +
             "<td>" + escapeHtml(p.outcome || "—") + "</td>" +
             "<td>" + escapeHtml(p.pnl_formatted || "—") + "</td>" +
+            "<td>" + escapeHtml(p.stake || "—") + "</td>" +
             "<td>" + escapeHtml(p.mode || "—") + "</td>" +
             '<td class="mono faint">' + escapeHtml(p.timestamp_utc || "—") + "</td>" +
             '<td class="notes" title="' + escapeHtml(reason) + '">' + escapeHtml(reason) + "</td>" +
@@ -571,9 +714,9 @@ async function previewImport(event) {
       }).join("");
     }
     $("importTruncated").hidden = !data.truncated;
-    $("importConfirmBtn").disabled = pendingReadyTrades.length === 0;
+    $("importConfirmBtn").disabled = true; // requires mapping approval
     $("importModal").hidden = false;
-    toast("Preview ready — review the rows, then click Import new trades.", "ok");
+    toast("Preview ready — review the mapping, tick the box, then click Import new trades.", "ok");
     if (data.missingRequired && data.missingRequired.length) {
       showImportErrors(["Required columns could not be mapped: " + data.missingRequired.join(", ") + ". Rename the headers or add those columns."]);
     }
@@ -587,6 +730,10 @@ async function previewImport(event) {
 async function confirmImport() {
   if (!pendingReadyTrades.length) {
     toast("Nothing new to import — duplicates and invalid rows are skipped.", "info");
+    return;
+  }
+  if (!$("mappingApproved").checked) {
+    toast("Confirm the column mapping above before importing (tick the checkbox).", "error");
     return;
   }
   $("importConfirmBtn").disabled = true;
@@ -626,6 +773,10 @@ document.addEventListener("DOMContentLoaded", () => {
   $("exampleBtn").addEventListener("click", fillExample);
   $("cancelEditBtn").addEventListener("click", resetForm);
   $("reloadBtn").addEventListener("click", refreshAll);
+  $("exportBtn").addEventListener("click", () => {
+    // Nothing to do — the link's href already carries the current filters.
+    toast("Downloading the filtered trades as CSV…", "info");
+  });
 
   const previewBtn = $("importPreviewBtn");
   if (previewBtn) previewBtn.addEventListener("click", previewImport);
@@ -640,6 +791,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const nameEl = $("importFileName");
       if (nameEl) nameEl.textContent = f ? f.name : "";
       hideImportErrors();
+      $("mappingApproved").checked = false;
+      $("importConfirmBtn").disabled = true;
     });
   }
   const importModal = $("importModal");
@@ -648,13 +801,32 @@ document.addEventListener("DOMContentLoaded", () => {
       if (event.target === importModal) closeImportModal();
     });
   }
+  $("mappingApproved").addEventListener("change", () => {
+    $("importConfirmBtn").disabled = !($("mappingApproved").checked && pendingReadyTrades.length > 0);
+  });
 
   document.querySelectorAll("#logCard .pill").forEach((btn) => {
     btn.addEventListener("click", () => setFilter(btn.dataset.mode));
   });
 
+  // Applies search / filters on input, loadTrades debounces naturally.
+  $("filterAsset").addEventListener("input", () => loadTrades());
+  $("filterOutcome").addEventListener("change", () => loadTrades());
+  $("filterFrom").addEventListener("change", () => loadTrades());
+  $("filterTo").addEventListener("change", () => loadTrades());
+  $("filterQ").addEventListener("input", () => loadTrades());
+  $("filterClearBtn").addEventListener("click", () => {
+    $("filterAsset").value = "";
+    $("filterOutcome").value = "";
+    $("filterFrom").value = "";
+    $("filterTo").value = "";
+    $("filterQ").value = "";
+    setFilter(state.filter);
+  });
+
   $("asset").addEventListener("input", updatePreviews);
   $("amount").addEventListener("input", updatePreviews);
+  $("stake").addEventListener("input", updatePreviews);
   $("outcome").addEventListener("change", updatePreviews);
   $("timestamp").addEventListener("input", updatePreviews);
 

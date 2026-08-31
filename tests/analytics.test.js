@@ -8,6 +8,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
+const CONFIG = require("../config");
 const {
   bucketTimestamp,
   wilsonInterval,
@@ -16,6 +17,18 @@ const {
   pickBestWindow,
   computeAnalytics,
 } = require("../analytics");
+
+// A small-N configuration for testing the SELECTION/ranking logic without
+// seeding hundreds of trades. The production config (CONFIG.ANALYTICS) keeps
+// the strict 30-trade + CI-over-baseline guard.
+const TEST_CFG = {
+  MIN_N: 3,
+  BEST_MIN_N: 5,
+  BEST_MARGIN: 0.05,
+  BEST_SMALL_SAMPLE_N: 30,
+  BEST_REQUIRE_CI_OVER_BASELINE: false,
+  WILSON_Z: 1.96,
+};
 
 /* ---------- helpers ---------- */
 
@@ -26,8 +39,11 @@ function lagosHour(h, day = 15, minute = 30) {
   return `2024-01-${String(day).padStart(2, "0")}T${utcHour}:${String(minute).padStart(2, "0")}:00Z`;
 }
 
-function trade(ts, outcome, cents, mode = "real") {
-  return { timestamp_utc: ts, outcome, pnl_cents: cents, mode };
+function trade(ts, outcome, cents, mode = "real", stake) {
+  return {
+    timestamp_utc: ts, outcome, pnl_cents: cents, mode,
+    stake_cents: stake === undefined ? null : stake,
+  };
 }
 
 /* ============================================================
@@ -133,7 +149,7 @@ test("buildBucketStats: buckets below MIN_N are marked ineligible", () => {
     trade(lagosHour(8, 15, 10), "win", 100),
     trade(lagosHour(8, 15, 20), "loss", -50),
   ];
-  const hourly = buildBucketStats(trades, "hour", "Africa/Lagos");
+  const hourly = buildBucketStats(trades, "hour", "Africa/Lagos", TEST_CFG);
   assert.equal(hourly.length, 24);
   const b8 = hourly[8];
   assert.equal(b8.n, 2);
@@ -151,12 +167,25 @@ test("buildBucketStats: eligible bucket gets win rate, expectancy, CI", () => {
     trade(lagosHour(8, 15, 20), "loss", -50),
     trade(lagosHour(8, 15, 40), "breakeven", 0),
   ];
-  const b8 = buildBucketStats(trades, "hour", "Africa/Lagos")[8];
+  const b8 = buildBucketStats(trades, "hour", "Africa/Lagos", TEST_CFG)[8];
   assert.equal(b8.eligible, true);
   assert.equal(b8.wins, 1);
   assert.ok(Math.abs(b8.winRate - 1 / 3) < 1e-9);
   assert.equal(b8.expectancyCents, Math.round(50 / 3)); // integer-cent math
   assert.ok(b8.ciLower > 0 && b8.ciUpper < 1);
+  assert.equal(b8.totalStakeCents, 0);
+  assert.equal(b8.roiPct, null);
+});
+
+test("buildBucketStats: ROI is derived from stake when present", () => {
+  const trades = [
+    trade(lagosHour(8, 15, 10), "win", 500, "real", 1000),
+    trade(lagosHour(8, 15, 20), "loss", -300, "real", 1000),
+    trade(lagosHour(8, 15, 30), "breakeven", 0, "real", 0),
+  ];
+  const b8 = buildBucketStats(trades, "hour", "Africa/Lagos", TEST_CFG)[8];
+  assert.equal(b8.totalStakeCents, 2000);
+  assert.equal(b8.roiPct, 10); // 200/2000 = 10%
 });
 
 test("buildBucketStats: weekday dimension buckets by configured weekday", () => {
@@ -166,7 +195,7 @@ test("buildBucketStats: weekday dimension buckets by configured weekday", () => 
     trade("2024-01-15T14:00:00Z", "loss", -100), // Monday
     trade("2024-01-16T12:00:00Z", "win", 100), // Tuesday
   ];
-  const weekly = buildBucketStats(trades, "weekday", "Africa/Lagos");
+  const weekly = buildBucketStats(trades, "weekday", "Africa/Lagos", TEST_CFG);
   assert.equal(weekly.length, 7);
   assert.equal(weekly[0].label, "Mon");
   assert.equal(weekly[0].n, 3);
@@ -181,7 +210,7 @@ test("summarizeTrades: win rate, expectancy, total, small-sample flag", () => {
     trade("2024-01-15T13:00:00Z", "loss", -100),
     trade("2024-01-15T14:00:00Z", "breakeven", 0),
   ];
-  const s = summarizeTrades(trades);
+  const s = summarizeTrades(trades, TEST_CFG);
   assert.equal(s.n, 3);
   assert.equal(s.wins, 1);
   assert.ok(Math.abs(s.winRate - 1 / 3) < 1e-9);
@@ -191,16 +220,18 @@ test("summarizeTrades: win rate, expectancy, total, small-sample flag", () => {
 });
 
 test("summarizeTrades: empty list is handled honestly", () => {
-  const s = summarizeTrades([]);
+  const s = summarizeTrades([], TEST_CFG);
   assert.equal(s.n, 0);
   assert.equal(s.winRate, null);
   assert.equal(s.ciLower, null);
   assert.equal(s.expectancyCents, null);
   assert.equal(s.smallSample, false);
+  assert.equal(s.roiPct, null);
 });
 
 /* ============================================================
- * Best-window selection
+ * Best-window selection (with small-N test config to exercise
+ * ranking; the DEFAULT config is separately tested below)
  * ============================================================ */
 
 test("pickBestWindow: minimum-N filter (4 winning trades is not enough)", () => {
@@ -219,9 +250,9 @@ test("pickBestWindow: minimum-N filter (4 winning trades is not enough)", () => 
       trade(lagosHour(10, 15, (i % 12) * 5), i < 3 ? "win" : "loss", 10)
     ),
   ];
-  const summary = summarizeTrades(trades);
-  const hourly = buildBucketStats(trades, "hour", "Africa/Lagos");
-  const best = pickBestWindow(hourly, summary);
+  const summary = summarizeTrades(trades, TEST_CFG);
+  const hourly = buildBucketStats(trades, "hour", "Africa/Lagos", TEST_CFG);
+  const best = pickBestWindow(hourly, summary, TEST_CFG);
 
   assert.equal(best.found, true);
   assert.equal(best.window.key, 9); // hour 9, NOT the 100% hour 8
@@ -240,9 +271,9 @@ test("pickBestWindow: required margin over baseline (boundary is not enough)", (
       trade(lagosHour(10, 15, (i % 12) * 5), i < 8 ? "win" : "loss", 10)
     ),
   ];
-  const summary = summarizeTrades(trades);
-  const hourly = buildBucketStats(trades, "hour", "Africa/Lagos");
-  const best = pickBestWindow(hourly, summary);
+  const summary = summarizeTrades(trades, TEST_CFG);
+  const hourly = buildBucketStats(trades, "hour", "Africa/Lagos", TEST_CFG);
+  const best = pickBestWindow(hourly, summary, TEST_CFG);
 
   // baseline = 11/20 = 55%. 60% is not > 55% + 5% = 60% (strict).
   assert.equal(best.found, false);
@@ -261,9 +292,9 @@ test("pickBestWindow: margin exceeded -> selected", () => {
       trade(lagosHour(10, 15, (i % 12) * 5), i < 8 ? "win" : "loss", 10)
     ),
   ];
-  const summary = summarizeTrades(trades);
-  const hourly = buildBucketStats(trades, "hour", "Africa/Lagos");
-  const best = pickBestWindow(hourly, summary);
+  const summary = summarizeTrades(trades, TEST_CFG);
+  const hourly = buildBucketStats(trades, "hour", "Africa/Lagos", TEST_CFG);
+  const best = pickBestWindow(hourly, summary, TEST_CFG);
   assert.equal(best.found, true); // 80% > 55% + 5%
   assert.equal(best.window.key, 9);
   assert.equal(best.window.n, 5);
@@ -285,9 +316,9 @@ test("pickBestWindow: ranked by Wilson lower bound, NOT raw win rate", () => {
       trade(lagosHour(10, 15, (i % 12) * 5), i < 2 ? "win" : "loss", 10)
     ),
   ];
-  const summary = summarizeTrades(trades);
-  const hourly = buildBucketStats(trades, "hour", "Africa/Lagos");
-  const best = pickBestWindow(hourly, summary);
+  const summary = summarizeTrades(trades, TEST_CFG);
+  const hourly = buildBucketStats(trades, "hour", "Africa/Lagos", TEST_CFG);
+  const best = pickBestWindow(hourly, summary, TEST_CFG);
 
   // Baseline = 20/35 = 57.1%; both hours qualify.
   // Hour 8: raw 80%, Wilson LB ~0.376. Hour 9: raw 70%, Wilson LB ~0.481.
@@ -299,10 +330,75 @@ test("pickBestWindow: ranked by Wilson lower bound, NOT raw win rate", () => {
 });
 
 test("pickBestWindow: empty data -> no window, honestly", () => {
-  const summary = summarizeTrades([]);
-  const hourly = buildBucketStats([], "hour", "Africa/Lagos");
-  const best = pickBestWindow(hourly, summary);
+  const summary = summarizeTrades([], TEST_CFG);
+  const hourly = buildBucketStats([], "hour", "Africa/Lagos", TEST_CFG);
+  const best = pickBestWindow(hourly, summary, TEST_CFG);
   assert.equal(best.found, false);
+});
+
+/* ============================================================
+ * DEFAULT config: the strict multiple-comparisons guard
+ * ============================================================ */
+
+test("DEFAULT config requires at least BEST_MIN_N (30) trades", () => {
+  // 29 trades in hour 8, all qualified otherwise-eligible, plus fillers.
+  const trades = Array.from({ length: 29 }, (_, i) =>
+    trade(lagosHour(8, 15, (i % 12) * 5), "win", 10)
+  );
+  const summary = summarizeTrades(trades); // default cfg
+  const hourly = buildBucketStats(trades, "hour"); // default cfg
+  const best = pickBestWindow(hourly, summary); // default cfg
+  assert.equal(hourly[8].n, 29);
+  assert.equal(best.found, false, "29 trades cannot clear a 30-trade bar");
+});
+
+test("DEFAULT config: 30+ trades with raw margin but CI lower bound below baseline does NOT qualify", () => {
+  // 31 trades in hour 8 with 19 wins = 61.3%; baseline across all 45 = 24/45 = 53.3%.
+  // Margin is met (61.3 > 58.3), but the Wilson lower bound for 19/31 (~0.437) is
+  // below the baseline, so the multiple-comparisons guard rejects it.
+  const hour8 = Array.from({ length: 31 }, (_, i) =>
+    trade(lagosHour(8, 15, (i % 12) * 5), i < 19 ? "win" : "loss", 10)
+  );
+  const fillers = Array.from({ length: 14 }, (_, i) =>
+    trade(lagosHour(14, 15, (i % 12) * 5), i < 5 ? "win" : "loss", 10)
+  );
+  const trades = [...hour8, ...fillers];
+  const summary = summarizeTrades(trades);
+  const hourly = buildBucketStats(trades, "hour");
+  const best = pickBestWindow(hourly, summary);
+
+  assert.equal(hourly[8].n, 31);
+  assert.ok(hourly[8].winRate > summary.winRate + CONFIG.ANALYTICS.BEST_MARGIN);
+  assert.ok(hourly[8].ciLower <= summary.winRate);
+  assert.equal(best.found, false, "confidence lower bound must ALSO clear the baseline");
+});
+
+test("DEFAULT config: big sample, margin AND CI lower bound clear baseline -> qualifies", () => {
+  // Hour 8: 35 trades, 28 wins (80%). Fillers: 25 trades, 10 wins (40%).
+  // Baseline = 38/60 = 63.3%. Margin: 80% > 68.3%. CI lower bound 28/35 ~ 0.6015... wait,
+  // compute precisely via wilsonInterval; it must clear 63.3% (it does for 28/35).
+  const hour8 = Array.from({ length: 35 }, (_, i) =>
+    trade(lagosHour(8, 15, (i % 12) * 5), i < 28 ? "win" : "loss", 10)
+  );
+  const fillers = Array.from({ length: 25 }, (_, i) =>
+    trade(lagosHour(14, 15, (i % 12) * 5), i < 10 ? "win" : "loss", 10)
+  );
+  const trades = [...hour8, ...fillers];
+  const summary = summarizeTrades(trades);
+  const hourly = buildBucketStats(trades, "hour");
+  const best = pickBestWindow(hourly, summary);
+
+  const b8 = hourly[8];
+  assert.equal(b8.n, 35);
+  assert.equal(b8.wins, 28);
+  const ci = wilsonInterval(28, 35);
+  assert.ok(b8.winRate > summary.winRate + CONFIG.ANALYTICS.BEST_MARGIN);
+  assert.ok(b8.ciLower > summary.winRate, "CI lower bound clears baseline");
+  assert.ok(Math.abs(b8.ciLower - ci.lower) < 1e-12);
+  assert.equal(best.found, true);
+  assert.equal(best.window.key, 8);
+  assert.equal(best.window.n, 35);
+  assert.equal(best.window.smallSample, false);
 });
 
 /* ============================================================
@@ -346,9 +442,7 @@ test("computeAnalytics: best-window is available for demo trades too", () => {
   const a = computeAnalytics(demo);
   assert.equal(a.real.summary.n, 0);
   assert.equal(a.demo.summary.n, 15);
-  assert.equal(a.demo.bestHour.found, true);
-  assert.equal(a.demo.bestHour.window.key, 12);
-  assert.equal(a.demo.bestHour.window.n, 5);
+  assert.equal(a.demo.bestHour.found, false, "demo has only 15 trades; default bar is 30");
   assert.equal(a.real.bestHour.found, false); // no real trades -> no real window
 });
 
@@ -360,4 +454,74 @@ test("computeAnalytics: no mode can beat a perfect baseline (honest null)", () =
   const a = computeAnalytics(real);
   assert.equal(a.real.summary.winRate, 1);
   assert.equal(a.real.bestHour.found, false);
+});
+
+/* ============================================================
+ * "Today" focus: the dashboard revolves around the current day
+ * and the best time of day on the current weekday.
+ * 2024-01-15 is a Monday in Africa/Lagos.
+ * ============================================================ */
+
+test("computeAnalytics: today block isolates the current calendar day", () => {
+  const trades = [
+    // Monday 2024-01-15 (today) — real
+    trade(lagosHour(8, 15, 10), "win", 100),
+    trade(lagosHour(8, 15, 20), "win", 100),
+    trade(lagosHour(9, 15, 10), "loss", -50),
+    // Tuesday 2024-01-16 — must NOT count as today
+    trade(lagosHour(8, 16, 10), "win", 100),
+    trade(lagosHour(8, 16, 20), "win", 100),
+    // Monday today — demo
+    trade(lagosHour(12, 15, 10), "win", 999, "demo"),
+  ];
+  const a = computeAnalytics(trades, "Africa/Lagos", CONFIG.ANALYTICS, { today: "2024-01-15" });
+
+  assert.equal(a.real.today.date, "2024-01-15");
+  assert.equal(a.real.today.weekday, "Mon");
+  assert.equal(a.real.today.weekdayFull, "Monday");
+  assert.equal(a.real.today.weekdayKey, 0);
+  assert.equal(a.real.today.summary.n, 3, "only 2024-01-15 real trades count");
+  assert.equal(a.real.today.summary.wins, 2);
+  assert.equal(a.real.today.summary.totalPnlCents, 150);
+  assert.equal(a.demo.today.summary.n, 1);
+  // Start/end are the Lagos day: 00:00 Lagos = 23:00Z the previous day.
+  assert.equal(a.real.today.startIso, "2024-01-14T23:00:00.000Z");
+  assert.equal(a.real.today.endIso, "2024-01-15T23:00:00.000Z");
+});
+
+test("computeAnalytics: today's best hour uses ONLY this weekday's trades", () => {
+  // Monday (2024-01-15 + 2024-01-22): hour 8 = 20 trades/17 wins (85%),
+  // hour 9 = 20 trades/8 wins (40%) => Monday baseline 62.5%.
+  // Wilson lower bound of 17/20 (~0.640) clears 62.5%, so hour 8 qualifies.
+  // Tuesday 2024-01-16 has a perfect 100% hour 12 — it must be IGNORED.
+  const trades = [];
+  for (let i = 0; i < 10; i += 1) {
+    // 2024-01-15 (today): hour 8 -> 8 wins, hour 9 -> 2 wins
+    trades.push(trade(lagosHour(8, 15, (i % 12) * 5), i < 8 ? "win" : "loss", 10));
+    trades.push(trade(lagosHour(9, 15, (i % 12) * 5), i < 2 ? "win" : "loss", 10));
+    // 2024-01-22 (last Monday): hour 8 -> 9 wins, hour 9 -> 6 wins
+    trades.push(trade(lagosHour(8, 22, (i % 12) * 5), i < 9 ? "win" : "loss", 10));
+    trades.push(trade(lagosHour(9, 22, (i % 12) * 5), i < 6 ? "win" : "loss", 10));
+    // Tuesday 2024-01-16: perfect 100% at hour 12 — must be excluded
+    trades.push(trade(lagosHour(12, 16, (i % 12) * 5), "win", 10));
+    trades.push(trade(lagosHour(12, 23, (i % 12) * 5), "win", 10));
+  }
+  const a = computeAnalytics(trades, "Africa/Lagos", CONFIG.ANALYTICS, { today: "2024-01-15" });
+
+  assert.equal(a.real.today.summary.n, 20, "just 2024-01-15 trades");
+  const best = a.real.today.bestHour;
+  assert.equal(best.found, true);
+  assert.equal(best.window.key, 8);
+  assert.equal(best.window.n, 20, "uses Monday trades across weeks, not all days");
+  assert.equal(best.window.wins, 17);
+  assert.ok(best.window.ciLower > a.real.today.baseline.winRate, "CI lower bound above Monday baseline");
+  assert.ok(Math.abs(a.real.today.baseline.winRate - 25 / 40) < 1e-9);
+});
+
+test("computeAnalytics: today block is honest when there are no trades today", () => {
+  const trades = [trade(lagosHour(8, 16, 10), "win", 100)]; // Tuesday only
+  const a = computeAnalytics(trades, "Africa/Lagos", CONFIG.ANALYTICS, { today: "2024-01-15" });
+  assert.equal(a.real.today.summary.n, 0);
+  assert.equal(a.real.today.summary.winRate, null);
+  assert.equal(a.real.today.bestHour.found, false);
 });
